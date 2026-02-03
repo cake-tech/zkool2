@@ -1,5 +1,14 @@
 # Changelog
 
+## [6.9.1](https://github.com/hhanh00/zkool2/compare/zkool-v6.9.0...zkool-v6.9.1) (2026-02-03)
+
+
+### Bug Fixes
+
+* add message when wallet is offline ([#763](https://github.com/hhanh00/zkool2/issues/763)) ([5ad358a](https://github.com/hhanh00/zkool2/commit/5ad358a0ccd419a01ce7334e54a454070a9d3b17))
+* fix address qr scan ([#760](https://github.com/hhanh00/zkool2/issues/760)) ([a28617f](https://github.com/hhanh00/zkool2/commit/a28617fd2c400ae38ebf5bfad0ee0e7fa1a9946f))
+* sending to tex address ([#765](https://github.com/hhanh00/zkool2/issues/765)) ([98eea82](https://github.com/hhanh00/zkool2/commit/98eea82efdec7e64e35d4ebc3bd64af49e4128e4))
+
 ## [6.9.0](https://github.com/hhanh00/zkool2/compare/zkool-v6.8.2...zkool-v6.9.0) (2026-01-17)
 
 
