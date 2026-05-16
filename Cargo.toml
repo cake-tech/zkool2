@@ -9,12 +9,22 @@ debug = 1
 
 [profile.dev.package."*"]
 debug = 0
+# macOS 27 dyld rejects dylibs whose LINKEDIT string pool is not 8-byte
+# aligned. With debug = 0, Cargo passes -C strip=debuginfo, and llvm-objcopy
+# in this toolchain mis-aligns that pool (rust-lang/rust#157750). Proc-macro
+# dylibs are dlopen'd while compiling (sqlx-macros). An explicit strip = "none"
+# stops that pass. package."*" overrides build-override, so it has to live here.
+strip = "none"
 
 [profile.test]
 debug = 1
 
 [profile.test.package."*"]
 debug = 0
+strip = "none"
+
+[profile.release]
+strip = "none"
 
 [patch.crates-io]
 # nym pins sqlx ^0.8.6, which cannot coexist with libsqlite3-sys 0.35.

@@ -428,18 +428,30 @@ fn external_addrs_from_ivk(
     Ok(addresses)
 }
 
-/// The external transparent addresses a new account registers: index 0 and
-/// the account's default diversifier index (once, when they coincide).
+/// The external transparent addresses a new account registers.
+///
+/// Normally that is index 0 and the default diversifier index. A
+/// transparent-only account registers every slot in between as well:
+/// transparent sync only scans rows in `transparent_address_accounts`, and
+/// the default diversifier can be greater than 0.
 async fn external_transparent_addrs(
     network: &Network,
     tvk: &AccountPubKey,
     tsk: Option<&AccountPrivKey>,
     dindex: u32,
+    contiguous: bool,
 ) -> Result<Vec<TransparentAddr>> {
     let source = TransparentKeySource::software(tvk.clone(), tsk.cloned());
-    let mut addresses = vec![transparent_addr(network, &source, 0).await?];
-    if dindex != 0 {
-        addresses.push(transparent_addr(network, &source, dindex).await?);
+    let mut addresses = Vec::new();
+    if contiguous {
+        for di in 0..=dindex {
+            addresses.push(transparent_addr(network, &source, di).await?);
+        }
+    } else {
+        addresses.push(transparent_addr(network, &source, 0).await?);
+        if dindex != 0 {
+            addresses.push(transparent_addr(network, &source, dindex).await?);
+        }
     }
     Ok(addresses)
 }
@@ -475,8 +487,14 @@ async fn derive_account_keys(
             if pools & POOL_TRANSPARENT != 0 {
                 let tsk = usk.transparent();
                 let tvk = tsk.to_account_pubkey();
-                let addresses =
-                    external_transparent_addrs(network, &tvk, Some(tsk), dindex).await?;
+                let addresses = external_transparent_addrs(
+                    network,
+                    &tvk,
+                    Some(tsk),
+                    dindex,
+                    pools == POOL_TRANSPARENT,
+                )
+                .await?;
                 keys.transparent = Some(TransparentKeys {
                     sk: Some(tsk.clone()),
                     vk: Some(tvk),
@@ -506,7 +524,7 @@ async fn derive_account_keys(
         }
         KeySource::TransparentSk(xsk) => {
             let xvk = xsk.to_account_pubkey();
-            let addresses = external_transparent_addrs(network, &xvk, Some(&xsk), 0).await?;
+            let addresses = external_transparent_addrs(network, &xvk, Some(&xsk), 0, false).await?;
             keys.transparent = Some(TransparentKeys {
                 sk: Some(xsk),
                 vk: Some(xvk),
@@ -515,7 +533,7 @@ async fn derive_account_keys(
             });
         }
         KeySource::TransparentVk(xvk) => {
-            let addresses = external_transparent_addrs(network, &xvk, None, 0).await?;
+            let addresses = external_transparent_addrs(network, &xvk, None, 0, false).await?;
             keys.transparent = Some(TransparentKeys {
                 sk: None,
                 vk: Some(xvk),
@@ -577,7 +595,8 @@ async fn derive_account_keys(
             let dindex: u32 = di.try_into()?;
             keys.dindex = dindex;
             if let Some(tvk) = uvk.p2pkh().filter(|_| pools & POOL_TRANSPARENT != 0) {
-                let addresses = external_transparent_addrs(network, tvk, None, dindex).await?;
+                let addresses =
+                    external_transparent_addrs(network, tvk, None, dindex, false).await?;
                 keys.transparent = Some(TransparentKeys {
                     sk: None,
                     vk: Some(tvk.clone()),
@@ -726,7 +745,8 @@ async fn derive_official_device_keys(
         let tvk = uvk
             .p2pkh()
             .ok_or_else(|| anyhow!("device viewing key has no transparent key"))?;
-        let addresses = external_transparent_addrs(network, tvk, None, keys.dindex).await?;
+        let addresses =
+            external_transparent_addrs(network, tvk, None, keys.dindex, false).await?;
         keys.transparent = Some(TransparentKeys {
             sk: None,
             vk: Some(tvk.clone()),
@@ -1836,6 +1856,28 @@ pub async fn generate_next_dindex(
             .fetch_one(&mut *db_tx)
             .await?;
     let hw = get_account_hw(&mut db_tx, account).await?;
+    // Backfill any skipped transparent receive slots (transparent-only rotation wallets).
+    let tkeys_fill = select_account_transparent(&mut db_tx, account, dindex).await?;
+    if let Some(xvk) = tkeys_fill.xvk.as_ref() {
+        for di in 0..=dindex {
+            let sk = tkeys_fill
+                .xsk
+                .as_ref()
+                .and_then(|tsk| derive_transparent_sk(tsk, 0, di).ok());
+            let (pk, taddr) = derive_transparent_address(xvk, 0, di, false)?;
+            store_account_transparent_addr(
+                &mut db_tx,
+                account,
+                0,
+                di,
+                sk,
+                &pk,
+                &taddr.encode(network),
+                false,
+            )
+            .await?;
+        }
+    }
     // Next Sapling address. Some dindex must be skipped because they do not
     // correspond to a valid sapling address
     let svk = get_sapling_vk(&mut db_tx, account).await?;
@@ -2130,6 +2172,47 @@ pub async fn get_addresses(
         ua: ua.map(|x| x.encode(&network)),
         diversifier_index,
     };
+
+    Ok(addresses)
+}
+
+pub async fn list_owned_addresses(
+    network: &Network,
+    connection: &mut SqliteConnection,
+    account: u32,
+) -> Result<Vec<String>> {
+    let mut addresses = Vec::new();
+    let hw = get_account_hw(connection, account).await?;
+
+    let transparent = sqlx::query(
+        "SELECT address FROM transparent_address_accounts WHERE account = ?",
+    )
+    .bind(account)
+    .map(|row: SqliteRow| row.get::<String, _>(0))
+    .fetch_all(&mut *connection)
+    .await?;
+    addresses.extend(transparent);
+
+    for scope in [0u8, 1u8] {
+        let addr = get_account_full_address(network, connection, account, scope, hw).await?;
+        if !addr.is_empty() {
+            addresses.push(addr);
+        }
+    }
+
+    let addrs = get_addresses(network, connection, account, ALL_POOLS).await?;
+    if let Some(t) = addrs.taddr {
+        addresses.push(t);
+    }
+    if let Some(s) = addrs.saddr {
+        addresses.push(s);
+    }
+    if let Some(o) = addrs.oaddr {
+        addresses.push(o);
+    }
+    if let Some(u) = addrs.ua {
+        addresses.push(u);
+    }
 
     Ok(addresses)
 }
