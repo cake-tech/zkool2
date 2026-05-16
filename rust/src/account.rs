@@ -179,23 +179,44 @@ pub async fn new_account(
             store_account_transparent_sk(&mut db_tx, account, tsk).await?;
             let tvk = &tsk.to_account_pubkey();
             store_account_transparent_vk(&mut db_tx, account, tvk).await?;
-            for di in &[0, dindex] {
-                let sk = derive_transparent_sk(tsk, 0, *di)?;
-                let (pk, taddr) = derive_transparent_address(tvk, 0, *di, false)?;
-                store_account_transparent_addr(
-                    &mut db_tx,
-                    account,
-                    0,
-                    *di,
-                    Some(sk),
-                    &pk,
-                    &taddr.encode(&network),
-                    false,
-                )
-                .await?;
-                // do not create two taddrs if dindex == 0
-                if dindex == 0 {
-                    break;
+            // Transparent-only accounts need every receive slot 0..=dindex registered:
+            // transparent_sync only scans rows in transparent_address_accounts.
+            // The unified default diversifier can be >0, so &[0, dindex] leaves gaps.
+            if pools == 1 {
+                for di in 0..=dindex {
+                    let sk = derive_transparent_sk(tsk, 0, di)?;
+                    let (pk, taddr) = derive_transparent_address(tvk, 0, di, false)?;
+                    store_account_transparent_addr(
+                        &mut db_tx,
+                        account,
+                        0,
+                        di,
+                        Some(sk),
+                        &pk,
+                        &taddr.encode(&network),
+                        false,
+                    )
+                    .await?;
+                }
+            } else {
+                for di in &[0, dindex] {
+                    let sk = derive_transparent_sk(tsk, 0, *di)?;
+                    let (pk, taddr) = derive_transparent_address(tvk, 0, *di, false)?;
+                    store_account_transparent_addr(
+                        &mut db_tx,
+                        account,
+                        0,
+                        *di,
+                        Some(sk),
+                        &pk,
+                        &taddr.encode(&network),
+                        false,
+                    )
+                    .await?;
+                    // do not create two taddrs if dindex == 0
+                    if dindex == 0 {
+                        break;
+                    }
                 }
             }
         }
@@ -730,6 +751,28 @@ pub async fn generate_next_dindex(
             .fetch_one(&mut *db_tx)
             .await?;
     let hw = get_account_hw(&mut db_tx, account).await?;
+    // Backfill any skipped transparent receive slots (transparent-only rotation wallets).
+    let tkeys_fill = select_account_transparent(&mut db_tx, account, dindex).await?;
+    if let Some(xvk) = tkeys_fill.xvk.as_ref() {
+        for di in 0..=dindex {
+            let sk = tkeys_fill
+                .xsk
+                .as_ref()
+                .and_then(|tsk| derive_transparent_sk(tsk, 0, di).ok());
+            let (pk, taddr) = derive_transparent_address(xvk, 0, di, false)?;
+            store_account_transparent_addr(
+                &mut db_tx,
+                account,
+                0,
+                di,
+                sk,
+                &pk,
+                &taddr.encode(network),
+                false,
+            )
+            .await?;
+        }
+    }
     // Next Sapling address. Some dindex must be skipped because they do not
     // correspond to a valid sapling address
     let svk = get_sapling_vk(&mut db_tx, account).await?;
