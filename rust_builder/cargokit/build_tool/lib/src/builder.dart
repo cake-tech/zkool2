@@ -151,7 +151,7 @@ class RustBuilder {
         manifestPath,
         '-p',
         environment.crateInfo.packageName,
-        if (!environment.configuration.isDebug) '--release',
+        '--release',
         '--target',
         target.rust,
         '--target-dir',

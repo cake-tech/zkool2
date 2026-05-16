@@ -46,7 +46,6 @@ dependencies:
   decimal: ^3.2.1
   intl: ^0.20.2
 
-  mobile_scanner: ^7.0.1
   qr_flutter: ^4.1.0
 
   local_auth: ^2.3.0
@@ -61,16 +60,16 @@ dependencies:
   bubble: ^1.2.1
   memoize: ^3.0.0
   async: ^2.13.0
-  flutter_passkey_service:
-    git: https://github.com/hhanh00/flutter_passkey_service.git
+  #flutter_passkey_service:
+  #  git: https://github.com/hhanh00/flutter_passkey_service.git
 
   googleapis: ^13.0.0
   google_sign_in: ^6.0.0
   googleapis_auth: ^1.6.0
   extension_google_sign_in_as_googleapis_auth: ^2.0.0
-  device_info_plus: ^10.1.0
+  device_info_plus: ^9.1.0
 
-  password_strength_checker: ^1.3.2
+  # password_strength_checker: ^1.3.2
   crypto: ^3.0.3
 
 dev_dependencies:
