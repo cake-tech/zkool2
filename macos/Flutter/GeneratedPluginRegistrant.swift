@@ -12,7 +12,6 @@ import flutter_inappwebview_macos
 import flutter_passkey_service
 import google_sign_in_ios
 import local_auth_darwin
-import mobile_scanner
 import package_info_plus
 import path_provider_foundation
 import rive_common
@@ -27,7 +26,6 @@ func RegisterGeneratedPlugins(registry: FlutterPluginRegistry) {
   FlutterPasskeyServicePlugin.register(with: registry.registrar(forPlugin: "FlutterPasskeyServicePlugin"))
   FLTGoogleSignInPlugin.register(with: registry.registrar(forPlugin: "FLTGoogleSignInPlugin"))
   LocalAuthPlugin.register(with: registry.registrar(forPlugin: "LocalAuthPlugin"))
-  MobileScannerPlugin.register(with: registry.registrar(forPlugin: "MobileScannerPlugin"))
   FPPPackageInfoPlusPlugin.register(with: registry.registrar(forPlugin: "FPPPackageInfoPlusPlugin"))
   PathProviderPlugin.register(with: registry.registrar(forPlugin: "PathProviderPlugin"))
   RivePlugin.register(with: registry.registrar(forPlugin: "RivePlugin"))

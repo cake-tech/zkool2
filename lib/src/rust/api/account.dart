@@ -11,7 +11,7 @@ import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 import 'pay.dart';
 part 'account.freezed.dart';
 
-// These functions are ignored because they are not marked as `pub`: `derive_t_str`, `get_ledger`
+// These functions are ignored because they are not marked as `pub`: `get_ledger`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `SlotMask`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
