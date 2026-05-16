@@ -974,6 +974,10 @@ pub async fn plan_transaction(
         pczt
     };
 
+    let migration_orchard_outputs = migration
+        && recipient_states
+            .iter()
+            .any(|r| r.pool_mask.to_best_pool() == Some(2));
     let n_orchard_actions = pczt.orchard().actions().len();
     let pczt_package = PcztPackage {
         pczt: pczt.serialize().unwrap(),
@@ -981,12 +985,26 @@ pub async fn plan_transaction(
         sapling_indices: (0..n_spends[1])
             .map(|n| sapling_meta.spend_index(n).unwrap())
             .collect(),
-        orchard_indices: if ironwood_active {
+        orchard_indices: if ironwood_active && (!migration || migration_orchard_outputs) {
+            // Orchard V3 / NU6.3+: sign all actions (incl. change-output pairs).
+            // O→I migration is excluded (dummy orchard spend must not be signed).
             (0..n_orchard_actions).collect()
         } else {
-            (0..n_spends[2])
+            let mut indices: Vec<usize> = (0..n_spends[2])
                 .map(|n| orchard_meta.spend_action_index(n).unwrap())
-                .collect()
+                .collect();
+            // Pre-NU6.3 orchard change uses add_orchard_output (IO Finalizer
+            // handles dummies). Only NU6.3+ orchard change needs output indices.
+            if migration || (ironwood_active && change_pool == 2 && change > 0) {
+                let mut n = 0;
+                while let Some(idx) = orchard_meta.output_action_index(n) {
+                    if !indices.contains(&idx) {
+                        indices.push(idx);
+                    }
+                    n += 1;
+                }
+            }
+            indices
         },
         ironwood_indices: (0..n_spends[3])
             .map(|n| ironwood_meta.spend_action_index(n).unwrap())
