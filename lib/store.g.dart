@@ -87,7 +87,7 @@ final class SelectedAccountIdProvider
   }
 }
 
-String _$selectedAccountIdHash() => r'833aad0e4b19e6812674eedc0418e83387d5ee59';
+String _$selectedAccountIdHash() => r'ef55f6cf79a2b42d1942ad84ced7902950ab20d8';
 
 abstract class _$SelectedAccountId extends $Notifier<int> {
   int build();
@@ -221,7 +221,7 @@ final class SelectedAccountProvider extends $FunctionalProvider<
   }
 }
 
-String _$selectedAccountHash() => r'749b6e2d1f8d9a677d054da6da362642a8a4198d';
+String _$selectedAccountHash() => r'8fe4c0fb33769599d1a69f1efc302dd70f6b7aa7';
 
 @ProviderFor(SelectedFolder)
 const selectedFolderProvider = SelectedFolderProvider._();
@@ -1089,7 +1089,7 @@ final class AccountPageDataProvider extends $FunctionalProvider<
   }
 }
 
-String _$accountPageDataHash() => r'1b27ca25c3ccb2705f247b0ca97780de0df30679';
+String _$accountPageDataHash() => r'be356fdedbc8bf660c5ff2d19eaec87577045d47';
 
 @ProviderFor(fullAccountPageData)
 const fullAccountPageDataProvider = FullAccountPageDataProvider._();

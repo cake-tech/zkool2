@@ -86,7 +86,6 @@ impl Coin {
             0 => Network::Main,
             1 => Network::Test,
             2 => {
-                #[cfg(zcash_unstable = "nu7")]
                 let nu7 = if self.db_filepath.to_lowercase().contains("zsa") {
                     Some(BlockHeight::from_u32(1))
                 } else {
@@ -102,7 +101,6 @@ impl Coin {
                     nu6: Some(BlockHeight::from_u32(1)),
                     nu6_1: Some(BlockHeight::from_u32(1)),
                     nu6_2: Some(BlockHeight::from_u32(1)),
-                    #[cfg(zcash_unstable = "nu7")]
                     nu7,
                 })
             }
