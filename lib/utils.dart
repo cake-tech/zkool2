@@ -45,6 +45,14 @@ final invertSeparator = NumberFormat.decimalPattern(locale).symbols.DECIMAL_SEP 
 
 final int zatsPerZec = 100000000;
 
+/// Formats raw zatoshi voting power as e.g. `12.5 ZEC` (up to 4 decimals).
+String formatVotingPower(BigInt zatoshi) {
+  final zec = zatoshi.toDouble() / zatsPerZec;
+  var s = zec.toStringAsFixed(4);
+  s = s.replaceFirst(RegExp(r'\.?0+$'), '');
+  return "$s ZEC";
+}
+
 /// Format a fiat amount with its currency code.
 /// Uses the locale-aware number formatter followed by the uppercased currency code.
 String formatFiat(double amount, String currency) {
@@ -58,13 +66,13 @@ String doubleToString(double v, {required int decimals}) {
 }
 
 String zatToString(BigInt zat) {
-  final z = Fixed.fromBigInt(zat, scale: 8);
+  final z = Fixed.fromBigInt(zat, decimalDigits: 8);
   final s = zatFormatter.format(z.toDecimal());
   return s;
 }
 
 String zatToShortString(BigInt zat) {
-  final z = Fixed.fromBigInt(zat, scale: 8);
+  final z = Fixed.fromBigInt(zat, decimalDigits: 8);
   final s = zatShortFormatter.format(z.toDecimal());
   return s;
 }
@@ -106,7 +114,7 @@ Widget zatToText(BigInt zat, {String prefix = "", TextStyle? style, Function()? 
 
 Fixed stringToDecimal(String s, {int? scale}) {
   try {
-    return Fixed.parse(s, scale: scale, invertSeparator: invertSeparator);
+    return Fixed.parse(s, decimalDigits: scale, invertSeparator: invertSeparator);
   } on RangeError {
     throw FormatException('Invalid decimal: $s');
   }
@@ -114,7 +122,7 @@ Fixed stringToDecimal(String s, {int? scale}) {
 
 BigInt stringToZat(String s) {
   try {
-    final z = Fixed.parse(s, scale: 8, invertSeparator: invertSeparator);
+    final z = Fixed.parse(s, decimalDigits: 8, invertSeparator: invertSeparator);
     return z.minorUnits;
   } on RangeError {
     throw FormatException('Invalid amount: $s');
@@ -198,6 +206,8 @@ String compactBetween(DateTime from, DateTime to) {
       return (Colors.blue, Icons.shield, "Shield");
     case 12:
       return (Colors.grey, Icons.drag_handle, "T. Self Transfer");
+    case 16:
+      return (Colors.teal, Icons.sync_alt, "Migration");
     default:
       return (Colors.grey, Icons.question_mark, "Unknown");
   }
@@ -290,6 +300,76 @@ void showSnackbar(String message) => ScaffoldMessenger.of(navigatorKey.currentCo
         content: Text(message),
       ),
     );
+
+/// Condense an anyhow error's Debug output — what flutter_rust_bridge stores in
+/// [AnyhowException.message] — into a single informative line. anyhow formats as:
+///
+///     <top context>
+///
+///     Caused by:
+///         <cause>            // or "0: ..", "1: .." when there are several
+///
+///     Stack backtrace:       // dropped: too noisy for a warning
+///         0: ..
+///
+/// Returns the context chain joined by ": ", e.g.
+/// "plan_transaction in DKG publish: No feasible note selection found", so the
+/// warning shows both where it failed and why — without the backtrace frames.
+String compactAnyhowError(String message) {
+  final lines = message.split('\n');
+  final parts = <String>[];
+  if (lines.isNotEmpty && lines.first.trim().isNotEmpty) {
+    parts.add(lines.first.trim());
+  }
+  final numbered = RegExp(r'^\s*\d+:\s+(.*)$');
+  var inCauses = false;
+  for (final line in lines.skip(1)) {
+    final trimmed = line.trim();
+    if (trimmed.toLowerCase().startsWith('stack backtrace')) break;
+    if (trimmed.toLowerCase().startsWith('caused by')) {
+      inCauses = true;
+      continue;
+    }
+    if (trimmed.isEmpty) {
+      inCauses = false; // a blank line ends the "Caused by" block
+      continue;
+    }
+    if (inCauses) {
+      final m = numbered.firstMatch(line);
+      parts.add(m != null ? m.group(1)!.trim() : trimmed);
+    }
+  }
+  return parts.join(': ');
+}
+
+/// Show a transient warning in a snackbar. Used for errors we recover from
+/// automatically — e.g. a DKG or signing round that will retry on the next
+/// tick — so they should not interrupt with a modal error dialog. Shows the
+/// error's context chain (via [compactAnyhowError]), not the backtrace.
+void showWarningSnackbar(String message) {
+  final text = compactAnyhowError(message);
+  logger.i("[warn] $text");
+  final context = navigatorKey.currentContext!;
+  final scheme = Theme.of(context).colorScheme;
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      behavior: SnackBarBehavior.floating,
+      backgroundColor: scheme.tertiaryContainer,
+      content: Row(
+        children: [
+          Icon(Icons.warning_amber_rounded, color: scheme.onTertiaryContainer),
+          const Gap(8),
+          Expanded(
+            child: Text(
+              text,
+              style: TextStyle(color: scheme.onTertiaryContainer),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
 
 Future<bool> confirmDialog(BuildContext context, {required String title, required String message, Widget? body}) async {
   final confirmed = await AwesomeDialog(

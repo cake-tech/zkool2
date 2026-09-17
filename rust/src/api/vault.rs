@@ -1,9 +1,13 @@
+#[cfg(feature = "flutter")]
 use anyhow::Result;
 
-use flutter_rust_bridge::{DartFnFuture, frb};
+#[cfg(feature = "flutter")]
+use flutter_rust_bridge::{frb, DartFnFuture};
 
+#[cfg(feature = "flutter")]
 use crate::vault::{DartVaultIO, Vault};
 
+#[cfg(feature = "flutter")]
 #[frb]
 pub fn init_vault(
     append: impl Fn(Vec<u8>) -> DartFnFuture<Result<()>> + Send + Sync + 'static,
@@ -13,9 +17,11 @@ pub fn init_vault(
     Ok(DartVault(vault))
 }
 
+#[cfg(feature = "flutter")]
 #[frb(opaque)]
 pub struct DartVault(Vault<DartVaultIO>);
 
+#[cfg(feature = "flutter")]
 #[frb]
 impl DartVault {
     #[frb]
@@ -44,7 +50,9 @@ impl DartVault {
     ) -> Result<()> {
         let prf = <[u8; 32]>::try_from(prf_output)
             .map_err(|_| anyhow::anyhow!("Invalid PRF output length, expected 32 bytes"))?;
-        self.0.register_device(init_bytes, master_password, device_id_str, prf).await
+        self.0
+            .register_device(init_bytes, master_password, device_id_str, prf)
+            .await
     }
 
     #[frb]
@@ -58,11 +66,25 @@ impl DartVault {
         birth_height: u32,
         pk: Vec<u8>,
     ) -> Result<()> {
-        self.0.store_account(timestamp, name, seed, aindex, use_internal, birth_height, pk).await
+        self.0
+            .store_account(
+                timestamp,
+                name,
+                seed,
+                aindex,
+                use_internal,
+                birth_height,
+                pk,
+            )
+            .await
     }
 
     #[frb]
-    pub fn recover(&self, vault_bytes: Vec<u8>, master_password: String) -> Result<Vec<RestoredAccount>> {
+    pub fn recover(
+        &self,
+        vault_bytes: Vec<u8>,
+        master_password: String,
+    ) -> Result<Vec<RestoredAccount>> {
         let accounts = crate::vault::crypto::recover(&vault_bytes, &master_password)?;
         Ok(accounts)
     }

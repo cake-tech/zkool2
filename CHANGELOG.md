@@ -1,5 +1,200 @@
 # Changelog
 
+## [6.30.0](https://github.com/hhanh00/zkool2/compare/zkool-v6.29.0...zkool-v6.30.0) (2026-09-12)
+
+
+### Features
+
+* **account:** collapse pool balances on tap, persisted in DB settings ([7639054](https://github.com/hhanh00/zkool2/commit/7639054bcc6f542e90a961d853ed610dfc786d22))
+* create Ledger accounts and sign via zkool_graphql ([f792285](https://github.com/hhanh00/zkool2/commit/f7922853aeec099a4331416ebfa7e37401e07aee))
+* gate the Nym transport behind a cargo feature ([ad51493](https://github.com/hhanh00/zkool2/commit/ad51493d61f8f42834bdb7f93474c748e70f930a))
+* import Official Ledger UFVK from the device ([ae6de55](https://github.com/hhanh00/zkool2/commit/ae6de55f60bbeac1d7b749b81e34f544efcbff91))
+* sign v6 transactions with the Official Ledger app ([e6e462c](https://github.com/hhanh00/zkool2/commit/e6e462c6a71b7c3add7f823a280da9a69f525b84))
+* support multiple Ledger app types (Official, Zondax) ([#1242](https://github.com/hhanh00/zkool2/issues/1242)) ([1588b96](https://github.com/hhanh00/zkool2/commit/1588b96b43df840e640d0c8c3ff3b612b58a5602))
+
+
+### Bug Fixes
+
+* advance account dindex after the transparent scan ([1749b86](https://github.com/hhanh00/zkool2/commit/1749b86e67801ac239b1d1cb1a1b983a62e49e51))
+* build v6 for Official Ledger accounts and open the APDU HID interface ([121b51d](https://github.com/hhanh00/zkool2/commit/121b51d9737e7c3a5be8d99144578713582b4177))
+* derive shielded output addresses in the transaction plan ([1e03b2f](https://github.com/hhanh00/zkool2/commit/1e03b2f328f6eacce4c83626412a1a00c6b981dc))
+* force internal change for Official Ledger accounts ([cd79c02](https://github.com/hhanh00/zkool2/commit/cd79c02cfdde2407ddbd89b27495225aea6cf537))
+* include Ironwood in Unshield All ([c6572f3](https://github.com/hhanh00/zkool2/commit/c6572f365fefe55767b28994733bbd8d990b86f6))
+* keep transparent change addresses paired with external addresses ([cc51e2f](https://github.com/hhanh00/zkool2/commit/cc51e2ffb7c766b3d0172e65ef5acac14f3a87d6))
+* lock Use Internal Change per Ledger app and avoid empty pools selection ([f37e1b6](https://github.com/hhanh00/zkool2/commit/f37e1b62a8641220d6798290071703743fe50298))
+* make app error messages selectable ([599c223](https://github.com/hhanh00/zkool2/commit/599c223e84b8100b38576e99cf52d687c0853e5f))
+* pass the account id explicitly when signing on the server ([6e757f8](https://github.com/hhanh00/zkool2/commit/6e757f85580c5ae24371aab137604b7ecd7b726d))
+* restart autoSync immediately when the interval becomes positive ([0fefa11](https://github.com/hhanh00/zkool2/commit/0fefa11a40d657cbcd4d73bb27c6b507738d9df3))
+* scope witness consistency check to synced accounts ([059e980](https://github.com/hhanh00/zkool2/commit/059e980588554626add21ebb5da79acf9fc66cd2))
+* select and sync a newly restored account ([f2005e9](https://github.com/hhanh00/zkool2/commit/f2005e91ba55496791050083edbe6ff3ce8dd873))
+* stop the transparent scan only after consecutive unused addresses ([b09842e](https://github.com/hhanh00/zkool2/commit/b09842ee6eca09d8e4620882f4f0837cb59a88fe))
+* tag the transparent change output with its derivation ([eb3d89d](https://github.com/hhanh00/zkool2/commit/eb3d89d502a61422441c17b5c117a9d3ce2b9720))
+* **vote:** show ballot proposals immediately instead of after the vote-tree pre-sync ([694a5c2](https://github.com/hhanh00/zkool2/commit/694a5c20de8ac0eec8b24f027885636d589f723d))
+
+## [6.29.0](https://github.com/hhanh00/zkool2/compare/zkool-v6.28.1...zkool-v6.29.0) (2026-09-01)
+
+
+### Features
+
+* **frost:** drive DKG and signing from autosync instead of self-syncing ([#1236](https://github.com/hhanh00/zkool2/issues/1236)) ([623ded0](https://github.com/hhanh00/zkool2/commit/623ded005f7eb6b8aa448ff1247ad5b4c3a41103))
+* **vault:** sign out of Google when Cloud Vault is turned off ([277929a](https://github.com/hhanh00/zkool2/commit/277929a6cb55cc266a694d3b4aa157f23f3513df))
+
+
+### Bug Fixes
+
+* **frost:** lock spent notes at broadcast to stop duplicate-nullifier double-spends ([f80f27a](https://github.com/hhanh00/zkool2/commit/f80f27a7e248456e9e1e1a04e50e3483192e5839))
+* **frost:** report DKG round 0 and broadcast statuses in the UI ([#1230](https://github.com/hhanh00/zkool2/issues/1230)) ([deff307](https://github.com/hhanh00/zkool2/commit/deff307ce6312f26287d672111f7de5df8ea7fba))
+* **frost:** sync inside doDkg/doSign and hold off autosync ([0d0bbe3](https://github.com/hhanh00/zkool2/commit/0d0bbe3875417099e9e3d0755bade5dbf81a37c5))
+* **migrate:** stop migration stalling on Orchard totals of 0.005-0.0062 ZEC ([ef4db48](https://github.com/hhanh00/zkool2/commit/ef4db48157d545420936a9ee1903a3ff5972d3f5))
+* **pay:** serialize PCZTs with bincode standard() for interop ([381bb1d](https://github.com/hhanh00/zkool2/commit/381bb1d8a4d367518da5aabd8a569dd94a22c2b2))
+* **sync:** guard fetch_tx_details with the SYNCING lock ([f44c220](https://github.com/hhanh00/zkool2/commit/f44c220406f190ae6789f337b61653f179bf73a5))
+
+## [6.28.1](https://github.com/hhanh00/zkool2/compare/zkool-v6.28.0...zkool-v6.28.1) (2026-08-27)
+
+
+### Bug Fixes
+
+* **nym:** make large syncs over the mixnet reliable ([#1219](https://github.com/hhanh00/zkool2/issues/1219)) ([070ec89](https://github.com/hhanh00/zkool2/commit/070ec89b4368ff8c6241e1b19345abe04e680d89))
+* **proxy:** pass SOCKS5 credentials from proxy URL to tokio-socks ([1752e9d](https://github.com/hhanh00/zkool2/commit/1752e9de0cbb91d3e53d884ea8f536889e878291))
+* **voting:** remove sticky last-working server from share failover ([2b59628](https://github.com/hhanh00/zkool2/commit/2b59628f04f6fc46d9fc57494640af2670c3a77b))
+
+## [6.28.0](https://github.com/hhanh00/zkool2/compare/zkool-v6.27.0...zkool-v6.28.0) (2026-08-23)
+
+
+### Features
+
+* ballot page AppBar shows the round title ([ca86e2c](https://github.com/hhanh00/zkool2/commit/ca86e2cf6e8393349b270d3a1b0ffebded7f012e))
+* gate voting round actions on chain status; zero tally for voteless closed rounds ([8404323](https://github.com/hhanh00/zkool2/commit/8404323d6bd23bf18f0191827f2cc743bdf391e3))
+* results page title shows the round title ([fb449a8](https://github.com/hhanh00/zkool2/commit/fb449a8651db5e9fd901893274666900fb16ee2b))
+* shielded voting UI (ZIP 262) ([1e5564c](https://github.com/hhanh00/zkool2/commit/1e5564ca8808768b2b2959484e7372f76a2083d2))
+* show friendly round titles and option labels in the voting UI ([f991e8c](https://github.com/hhanh00/zkool2/commit/f991e8c3279b7dca6d2fe101e88622d279424600))
+* show per-vote on-chain evidence on the done and confirmation screens ([5db3025](https://github.com/hhanh00/zkool2/commit/5db3025a8e5558f043e0652268e64aaae21b1af3))
+* show proposal title and selection in the ballot evidence ([52f3c86](https://github.com/hhanh00/zkool2/commit/52f3c868aee603afae7148a1f5adaebeaec44068))
+* show proposal titles and option labels in the tally results ([e15bafc](https://github.com/hhanh00/zkool2/commit/e15bafc82998a9d16f52d1c365b20eee535a19bf))
+* show voting power on voting confirmation and status pages ([0a7472c](https://github.com/hhanh00/zkool2/commit/0a7472cb5913446cb6fe74a2e65b3fa0dd25d81a))
+* **voting:** resumable recovery across network, server, and client failures ([ad7ad08](https://github.com/hhanh00/zkool2/commit/ad7ad0889b135b5fd58b3790061caa4f6827c1d7))
+
+
+### Bug Fixes
+
+* **account:** derive sapling address on file import and fail fast on corrupt stored addresses ([e8e9f22](https://github.com/hhanh00/zkool2/commit/e8e9f22c196ec718c675484bc9ff31d125116eb0))
+* auto-create the voting hotkey at delegation time ([06ff09c](https://github.com/hhanh00/zkool2/commit/06ff09c9867477e91072800f3464bff3509f993e))
+* batch-load voting sessions on one pool connection; keep the pool free during delegation ([f056f50](https://github.com/hhanh00/zkool2/commit/f056f5024947fbac96bde464139d5fbae79f967c))
+* build with Flutter 3.47.0 ([aca790c](https://github.com/hhanh00/zkool2/commit/aca790cd1f018eb29197a692801f9feb219083cd))
+* bump Kotlin to 2.2.20 for Flutter 3.47.0 Android build ([891ff2d](https://github.com/hhanh00/zkool2/commit/891ff2dc3fdfe21e6227e0b8b964e1a283c47658))
+* bundle sapling params in desktop and graphql builds ([c48cf9e](https://github.com/hhanh00/zkool2/commit/c48cf9e2b7194c78ca746af70a60fe446dbef654))
+* cast one proposal at a time so the vote VAN chains ([7e2a4d6](https://github.com/hhanh00/zkool2/commit/7e2a4d657a87cc9513e22fd5a3e8026b0891cf7c))
+* decode trailing escaped spaces in OA1 records ([a58529d](https://github.com/hhanh00/zkool2/commit/a58529de91b122749cabf8a0ce43ee2bad0e48e5))
+* don't re-send recorded shares; refresh status after tracking ([ca013ad](https://github.com/hhanh00/zkool2/commit/ca013ad6d649a4458b022b61495e78e6863acff9))
+* drop redundant pool predicate from diversifier index backfill ([f22a316](https://github.com/hhanh00/zkool2/commit/f22a3162ca0ac459e842d1ee2fba1be2dacb1114))
+* exclude post-snapshot notes from delegation prepare ([c343a71](https://github.com/hhanh00/zkool2/commit/c343a71c9228d84fd7893f56463160a3b1b1ac45))
+* fall back to the configured vote servers for helper shares ([4ead4da](https://github.com/hhanh00/zkool2/commit/4ead4da1cd1d08b7eb768605659277d444627bf2))
+* honest done label when only time-scheduled steps remain ([1129f34](https://github.com/hhanh00/zkool2/commit/1129f34b931379054906df293b6565081f60c8de))
+* key ballot evidence proposals by id, not list position ([8811c97](https://github.com/hhanh00/zkool2/commit/8811c975ed46328637908cff4187de62a58e2029))
+* **ledger:** transparent-only signing + NU6.3 v5 workaround for hardware wallets ([#1208](https://github.com/hhanh00/zkool2/issues/1208)) ([3fdeea0](https://github.com/hhanh00/zkool2/commit/3fdeea0a161776e275545f183cea12e416dbba80))
+* make delegation confirmation real and recoverable ([80a073b](https://github.com/hhanh00/zkool2/commit/80a073bc815354e856acc6947be67c7b264a0ccc))
+* parse the chain's string block heights; prove with voting-circuits 0.10.0 ([57357ef](https://github.com/hhanh00/zkool2/commit/57357ef871f8865712c77bc7b8611d84fc626158))
+* parse vote-sdk tally entries per-entry decision and amount ([dfd5db0](https://github.com/hhanh00/zkool2/commit/dfd5db0fe9151f0bf0b0ae394b8108e75138fd33))
+* pass one connection through voting DB reads; stop pool stalls on voting page ([c791f7f](https://github.com/hhanh00/zkool2/commit/c791f7f80e8ca1b5c3647dcc6d7120d4ab5e3b7e))
+* persist ballot intents at cast time; parse option index ([2e6f796](https://github.com/hhanh00/zkool2/commit/2e6f79655e5496fa96d1ec678f7ae4f194e903f5))
+* render option labels with vote-sdk ids, not 1-based positions ([4fcaa22](https://github.com/hhanh00/zkool2/commit/4fcaa220f80391e38f907df6d259e610f8de2462))
+* resolve share-window timing from the chain round status ([87c6be3](https://github.com/hhanh00/zkool2/commit/87c6be3d23c1624b20a5766eb702764cd3f0aff7))
+* run fresh voting submissions end-to-end (delegate + vote) ([ed4b752](https://github.com/hhanh00/zkool2/commit/ed4b7520f57c12598f41583da189b6fcc8cc6770))
+* run the PIR connect inside the prove thread ([ab74456](https://github.com/hhanh00/zkool2/commit/ab74456746657a562bd148259909bccf1400c113))
+* save settings on nav away; resolve voting config from form value ([e2fb677](https://github.com/hhanh00/zkool2/commit/e2fb677fa3808930ac5e894e513ab617cc3de58c))
+* **settings:** keep transport selector within screen width (FittedBox + padding) ([bed8131](https://github.com/hhanh00/zkool2/commit/bed813138743371f1a99ebf07f5322eeaa8ead70))
+* stop ref use after unmount when closing Folders page (issue 1203) ([ba14db4](https://github.com/hhanh00/zkool2/commit/ba14db4370bb89601f84356c3ef8ee2c6251c8e7))
+* submit helper shares from the confirmed votes' payloads ([c61dd21](https://github.com/hhanh00/zkool2/commit/c61dd21e4371058e0b4c9a4414849b2ccab925af))
+* support flutter 3.47 (intl 0.20.3); fixed 6.2.0 rename scale→decimalDigits ([f46f650](https://github.com/hhanh00/zkool2/commit/f46f65061eed1762d9814dd96e27f90aa963f3f9))
+* surface voting config resolve errors instead of swallowing them ([6c8c98b](https://github.com/hhanh00/zkool2/commit/6c8c98be3d65cf1b2d9faf6c6a4d35b509a3a5ba))
+* tally entries without a decision key are decision 0, not a total ([7b97c6a](https://github.com/hhanh00/zkool2/commit/7b97c6a62b13da3f819f98303865610429205444))
+* use app lightwalletd URL for fresh delegation prepare ([63acacb](https://github.com/hhanh00/zkool2/commit/63acacbbc038671c896d472bd933b61d19469863))
+* use the async PIR client for delegation proving ([c497c05](https://github.com/hhanh00/zkool2/commit/c497c059354a0e82e65cd14f27cba025ba97558a))
+* **voting:** default vote node URL to the vote chain server when unset ([1a9bc99](https://github.com/hhanh00/zkool2/commit/1a9bc9978231e5fe1043165b76f45a7a86ae61d8))
+* **voting:** keep back navigation to account after vote submission ([f291d65](https://github.com/hhanh00/zkool2/commit/f291d65246f4b5df07fbc0f6d97fb798af576089))
+* **voting:** recovery edge cases found in live testing ([294e71f](https://github.com/hhanh00/zkool2/commit/294e71ff6bb263ce3a5456ffbcc1a72438aa9dfd))
+
+## [6.27.0](https://github.com/hhanh00/zkool2/compare/zkool-v6.26.1...zkool-v6.27.0) (2026-08-15)
+
+
+### Features
+
+* add nym mixnet as transport ([#1195](https://github.com/hhanh00/zkool2/issues/1195)) ([59a5ed8](https://github.com/hhanh00/zkool2/commit/59a5ed8bd187e1ff2645e15448424f07d5a1ca55))
+* Zcash voting (ZIP 262) delegation and vote casting ([#1198](https://github.com/hhanh00/zkool2/issues/1198)) ([b59f958](https://github.com/hhanh00/zkool2/commit/b59f958915696bf3d50af590ac6ca0e765ab23cd))
+
+
+### Bug Fixes
+
+* fix ios build ([a83f655](https://github.com/hhanh00/zkool2/commit/a83f65552648136db1296daa2652448125195e8d))
+* honour RUST_LOG in zkool_graphql ([#1190](https://github.com/hhanh00/zkool2/issues/1190)) ([ca49412](https://github.com/hhanh00/zkool2/commit/ca4941250d2dfac13832d40066062cf6915ba579))
+* send to TEX (ZIP 320) addresses ([aba4f30](https://github.com/hhanh00/zkool2/commit/aba4f3012e6d5c761388fcbd4d452c080d7dc14a))
+
+## [6.26.1](https://github.com/hhanh00/zkool2/compare/zkool-v6.26.0...zkool-v6.26.1) (2026-08-02)
+
+
+### Bug Fixes
+
+* ironwood tx detection in mempool ([cef5160](https://github.com/hhanh00/zkool2/commit/cef5160c39f6354f60d40f0c04df8e2a585f1a8b))
+* refresh mempool keys after new blocks ([ce74c2f](https://github.com/hhanh00/zkool2/commit/ce74c2fd1e86f1851fe9cfa57ba85357eed4bf14))
+
+## [6.26.0](https://github.com/hhanh00/zkool2/compare/zkool-v6.25.1...zkool-v6.26.0) (2026-07-31)
+
+
+### Features
+
+* add dust filter toggle for notes (hide ZEC notes &lt;= 5000 zats) ([531e4d8](https://github.com/hhanh00/zkool2/commit/531e4d8d77a9736eaebed9cb404c31db0673ce7d))
+* add group by pool toggle for notes view ([b785872](https://github.com/hhanh00/zkool2/commit/b785872644a2c683ff0c1260cba122dcd87c7d6c))
+* add lock/unlock all button per pool section header ([3e63ea7](https://github.com/hhanh00/zkool2/commit/3e63ea7d022c401a762e456020a854a2944b1aa1))
+* add one-shot Orchard migration ([d4aae4d](https://github.com/hhanh00/zkool2/commit/d4aae4d227ecf4ba98ecca683786855409d4cda2))
+* add toggle all notes button to invert lock state of every note ([ecb0a61](https://github.com/hhanh00/zkool2/commit/ecb0a6116889b4fdc9c057d24d9e98e33fdb35fb))
+* enhance migration with streaming and progress tracking ([71bab2b](https://github.com/hhanh00/zkool2/commit/71bab2b46676d08df269802015fc1d4f37c76832))
+* identify migration txs in history ([b28998e](https://github.com/hhanh00/zkool2/commit/b28998e7ee91cfa435bf99b70e7f90762877022c))
+* improve migration flow ([e448ff4](https://github.com/hhanh00/zkool2/commit/e448ff4c02886559bdb9fefb62a3ebae6888237b))
+* skip migration step when no new blocks since last broadcast ([d025a94](https://github.com/hhanh00/zkool2/commit/d025a9459f11c7d5808807ac1f9e99f5e96f0413))
+
+
+### Bug Fixes
+
+* add cancellation support for note migration ([11fe166](https://github.com/hhanh00/zkool2/commit/11fe1665bb30410e003b4be890dbd3505cbb8e78))
+* add error log printer utility ([85d17a1](https://github.com/hhanh00/zkool2/commit/85d17a1118f84c834839a6867f4130d0f30608b6))
+* address review comments ([09ac425](https://github.com/hhanh00/zkool2/commit/09ac4256ed26ef836177e5535a8f1763c667bbd1))
+* confirm before leaving active migration ([961a8a8](https://github.com/hhanh00/zkool2/commit/961a8a8bd905d8d0051bffffe90c5655f504ff56))
+
+## [6.25.1](https://github.com/hhanh00/zkool2/compare/zkool-v6.25.0...zkool-v6.25.1) (2026-07-28)
+
+
+### Bug Fixes
+
+* restore Ledger build compatibility ([51ff5e5](https://github.com/hhanh00/zkool2/commit/51ff5e50437dea22ca539aec922f122c62f34bab))
+* ZSA dependency compatibility - Use production versions of lrz ([2dbe9a3](https://github.com/hhanh00/zkool2/commit/2dbe9a393d3f7a6149812605a89e817769b4b001))
+
+## [6.25.0](https://github.com/hhanh00/zkool2/compare/zkool-v6.24.0...zkool-v6.25.0) (2026-07-27)
+
+
+### Features
+
+* log per-pool spend/output counts before build_for_pczt ([2aebcf5](https://github.com/hhanh00/zkool2/commit/2aebcf5a85dfd826dd632c16776bf4088b892d43))
+* PCZT-DUMP with enc_ciphertext length, per-pool counts, block-wait loops in tests ([e1b8868](https://github.com/hhanh00/zkool2/commit/e1b886859d231404bea910beeeea97ff5c3e76ad))
+* re-enable ZSA support ([#1164](https://github.com/hhanh00/zkool2/issues/1164)) ([4fd9c66](https://github.com/hhanh00/zkool2/commit/4fd9c66f1bc620ddc4821fe9d2279ac58b1a81c3))
+* TransactionData.orchard_bundle -&gt; OrchardBundle enum, ZSA PCZT domain support, test: block-mining wait loop, per-account coins ([0f75d5a](https://github.com/hhanh00/zkool2/commit/0f75d5aef2d8fe0fc5da37651197fd40fb49dc04))
+* TransactionData.orchard_bundle uses OrchardBundle enum, ZSA PCZT domain support ([314c281](https://github.com/hhanh00/zkool2/commit/314c2815b5e3e539d7d152dcc88fcaa975212fcb))
+* ZSA circuit separation — use vanilla PK for O2O, ZSA PK for issuance; add zsa-circuit feature; add ZSA issuance test ([38a3838](https://github.com/hhanh00/zkool2/commit/38a3838e44b9bdc045cea9b6030733791db483c7))
+* ZSA prover uses ORCHARD_ZSA_PK for all Nu7 txs, add pczt_replay CLI ([9a6d304](https://github.com/hhanh00/zkool2/commit/9a6d30465e881d238028a2d4e4e6a24baba2ae9d))
+
+
+### Bug Fixes
+
+* always select notes for privacy, with fee as tie-breaker ([329a1cf](https://github.com/hhanh00/zkool2/commit/329a1cf1373239a4dca5dafa4b3cf130f384958c))
+* auto-pin db to coin=3 when filename contains 'zsa' ([42ed01c](https://github.com/hhanh00/zkool2/commit/42ed01c8d69478e13a58054740505fd0f62792f4))
+* complete ZSA PCZT transaction support ([850ad82](https://github.com/hhanh00/zkool2/commit/850ad829e475ee2540a53737a47a462edbe123b1))
+* correct ZSA action fees and transaction summaries ([90a0286](https://github.com/hhanh00/zkool2/commit/90a02867f7517d89263ef0d3e34229f0dd87a08f))
+* finalize new ZSA issuance ([bebc3a5](https://github.com/hhanh00/zkool2/commit/bebc3a5075171800f22cc95ec6b137376168bf4c))
+* hide ZSA reissuance flow ([6550ad7](https://github.com/hhanh00/zkool2/commit/6550ad760faeb98e82231e46ba58abdc365d43da))
+* improve error handling and diagnostics - fix IRW detection ([b42acbb](https://github.com/hhanh00/zkool2/commit/b42acbbfda59bb237051b2cff4b669287bb571be))
+* remove cargo config ([484563c](https://github.com/hhanh00/zkool2/commit/484563c9347410d14c1e35bd5a57652e012dba67))
+* retain ZSA notes below ZEC dust threshold ([a611410](https://github.com/hhanh00/zkool2/commit/a611410b7b89091e8d0c33d687d5e2509539f5e3))
+* skip loading state on account page reload, enable prerelease versioning ([fabb1fe](https://github.com/hhanh00/zkool2/commit/fabb1feaf554a0729513bc3aedae56fe41bab984))
+
 ## [6.24.0](https://github.com/hhanh00/zkool2/compare/zkool-v6.23.0...zkool-v6.24.0) (2026-07-20)
 
 

@@ -25,20 +25,22 @@ use sapling_crypto::PaymentAddress;
 use secp256k1::{PublicKey, SecretKey};
 use sha2::{Digest as _, Sha256};
 use sqlx::{sqlite::SqliteRow, Row, SqliteConnection};
-use tracing::{event, info, span, Level};
+use tracing::{debug, event, info, span, Level};
 use zcash_address::{unified::Receiver, ConversionError, TryFromAddress, ZcashAddress};
 use zcash_keys::{address::UnifiedAddress, encoding::AddressCodec as _};
-use zcash_protocol::{PoolType, ShieldedPool};
+use zcash_note_encryption::Domain;
 use zcash_primitives::transaction::{
-    builder::{BuildConfig, Builder},
+    builder::{BuildConfig, Builder, BundlePadding},
+    TxVersion,
     fees::zip317::FeeRule,
 };
 use zcash_proofs::prover::LocalTxProver;
 use zcash_protocol::{
-    consensus::{BlockHeight, NetworkType, NetworkUpgrade, Parameters},
+    consensus::{BlockHeight, BranchId, NetworkType, NetworkUpgrade, Parameters},
     memo::{Memo, MemoBytes},
     value::Zatoshis,
 };
+use zcash_protocol::{PoolType, ShieldedPool};
 use zcash_transparent::{
     address::TransparentAddress,
     builder::{SpendInfo, TransparentInputInfo},
@@ -49,25 +51,58 @@ use zip321::{Payment, TransactionRequest};
 
 use crate::{
     account::{
-        derive_transparent_sk, generate_next_change_address, get_account_full_address,
-        get_orchard_note, get_orchard_sk, get_orchard_vk, get_sapling_note, get_sapling_sk,
-        get_sapling_vk,
+        derive_transparent_sk, get_account_full_address, get_orchard_note, get_orchard_sk,
+        get_orchard_vk, get_sapling_note, get_sapling_sk, get_sapling_vk,
+        transparent_change_address,
     },
     api::{coin::Network, issuance::IssuanceInfo, pay::PcztPackage},
     db::{get_account_dindex, get_account_hw, select_account_transparent},
     keys::{sapling_pgk_for_scope, sapling_ssk_for_scope, SaplingFullViewingKey},
+    ledger::HwKind,
     pay::{
         error::Error,
         fee::COST_PER_ACTION,
         pool::{PoolMask, NUM_POOLS},
         prepare::to_zec,
-        solve, InputNote, Recipient, RecipientState, ReceiverOption, DecomposedRecipient,
+        solve, DecomposedRecipient, InputNote, ReceiverOption, Recipient, RecipientState,
     },
     warp::hasher::{empty_roots, OrchardHasher, SaplingHasher},
     Client,
 };
 
 use zcash_primitives::transaction::zsa_builder::ZsaBuilder;
+
+fn attach_orchard_asset_names<D: Domain>(
+    mut updater: orchard::pczt::Updater<'_, D>,
+    asset_names: &HashMap<[u8; 32], String>,
+) -> Result<(), orchard::pczt::UpdaterError> {
+    for index in 0..updater.bundle().actions().len() {
+        let (spend_name, output_name) = {
+            let action = &updater.bundle().actions()[index];
+            (
+                action
+                    .spend()
+                    .asset()
+                    .and_then(|asset| asset_names.get(&asset.to_bytes()).cloned()),
+                action
+                    .output()
+                    .asset()
+                    .and_then(|asset| asset_names.get(&asset.to_bytes()).cloned()),
+            )
+        };
+
+        updater.update_action_with(index, |mut action| {
+            if let Some(name) = spend_name {
+                action.set_spend_proprietary("asset_name".to_string(), name.into_bytes());
+            }
+            if let Some(name) = output_name {
+                action.set_output_proprietary("asset_name".to_string(), name.into_bytes());
+            }
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
 
 pub fn is_tex(network: &Network, address: &str) -> Result<bool> {
     let zaddress = ZcashAddress::from_str(address)?;
@@ -153,13 +188,22 @@ fn decompose_address(
     let zaddr = ZcashAddress::try_from_encoded(address)?;
 
     if zaddr.can_receive_as(PoolType::Transparent) {
-        let taddr = TransparentAddress::decode(network, address)
-            .map_err(|e| anyhow!("Failed to decode transparent address: {e:?}"))?;
-        let receiver = match taddr {
-            TransparentAddress::PublicKeyHash(hash) => Receiver::P2pkh(hash),
-            TransparentAddress::ScriptHash(hash) => Receiver::P2sh(hash),
+        let receiver = match zaddr.convert_if_network(network.network_type()) {
+            Ok(zcash_keys::address::Address::Tex(data)) => Receiver::P2pkh(data),
+            _ => {
+                let taddr = TransparentAddress::decode(network, address)
+                    .map_err(|e| anyhow!("Failed to decode transparent address: {e:?}"))?;
+                match taddr {
+                    TransparentAddress::PublicKeyHash(hash) => Receiver::P2pkh(hash),
+                    TransparentAddress::ScriptHash(hash) => Receiver::P2sh(hash),
+                }
+            }
         };
-        return Ok(ReceiverOption { receiver, pool: 0, remaining: 0 });
+        return Ok(ReceiverOption {
+            receiver,
+            pool: 0,
+            remaining: 0,
+        });
     }
 
     if zaddr.can_receive_as(PoolType::Shielded(ShieldedPool::Sapling)) {
@@ -189,26 +233,83 @@ fn decompose_address(
     anyhow::bail!("Unrecognized address pool");
 }
 
-#[allow(clippy::too_many_arguments)]
-pub async fn plan_transaction(
-    network: &Network,
-    connection: &mut SqliteConnection,
-    client: &mut Client,
-    account: u32,
-    src_pools: u8,
-    recipients: &[Recipient],
-    recipient_pays_fee: bool,
-    confirmations: Option<u32>,
-    smart_transparent: bool,
-    category: Option<u32>,
-    issuance: Option<&IssuanceInfo>,
-    migration: bool,
-    mode: crate::pay::solve::Mode,
-    preselected: Option<&[u32]>,
-) -> Result<PcztPackage> {
-    let mut input_pools = fetch_unspent_notes_by_pool(connection, account).await?;
-    let height = client.latest_height().await?;
-    let confirmations = confirmations.unwrap_or_default();
+/// Whether `e` (anywhere in its cause chain) is the transient
+/// [`Error::NoFeasibleSelection`] raised by [`plan_transaction`]. The FROST
+/// rounds use this to treat "the change we just spent is not mined yet" as a
+/// wait instead of a hard error; the chain is walked so wrapping the error in
+/// `.context(..)` does not hide it.
+pub fn is_no_feasible_selection(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        matches!(
+            c.downcast_ref::<crate::pay::error::Error>(),
+            Some(crate::pay::error::Error::NoFeasibleSelection)
+        )
+    })
+}
+
+/// Inputs to the pure planning core [`plan_outputs`].
+///
+/// Carries everything the note-selection and output-planning logic needs
+/// without touching the DB, the network client, or the prover. `input_pools`
+/// and `height` are the only values [`plan_transaction`] must fetch first;
+/// everything else is passed straight through from its arguments. Isolating
+/// this state is what lets the selection logic be unit-tested deterministically.
+pub(crate) struct PlanInputs<'a> {
+    pub network: &'a Network,
+    pub height: u32,
+    pub input_pools: Vec<Vec<InputNote>>,
+    pub recipients: Vec<Recipient>,
+    pub src_pools: u8,
+    pub recipient_pays_fee: bool,
+    pub confirmations: u32,
+    pub smart_transparent: bool,
+    pub migration: bool,
+    pub issuance: Option<&'a IssuanceInfo>,
+    pub preselected: Option<&'a [u32]>,
+}
+
+/// Result of the pure planning core: the selected inputs (with `remaining`
+/// stamped on consumed notes), the recipient/change outputs, and the derived
+/// quantities the builder half of [`plan_transaction`] still needs.
+pub(crate) struct PlanOutputs {
+    pub input_pools: Vec<Vec<InputNote>>,
+    pub recipient_states: Vec<RecipientState>,
+    pub change: u64,
+    pub change_pool: u8,
+    /// Planned ZIP-317 fee. The builder recomputes the on-chain fee from its
+    /// own `FeeRule`, so this is not consumed by `plan_transaction`; it is
+    /// exposed for tests and callers that want to inspect the plan.
+    #[allow(dead_code)]
+    pub fee: u64,
+    pub has_pool: [bool; NUM_POOLS],
+    pub ironwood_active: bool,
+    pub orchard_note_version: orchard::NoteVersion,
+    pub price: Option<f64>,
+}
+
+/// Pure note-selection and output-planning core of [`plan_transaction`].
+///
+/// Runs everything between "notes have been fetched" and "fetch tree states and
+/// build the PCZT": source-pool masking, the smart-transparent / max-amount
+/// transform, address decomposition, dust filtering, the [`solve::select_notes`]
+/// coin-selection call, and the recipient/change/fee accounting. It performs no
+/// I/O, so its behaviour is fully determined by [`PlanInputs`] and can be tested
+/// without a database, network client, or proving keys.
+pub(crate) fn plan_outputs(inp: PlanInputs) -> Result<PlanOutputs> {
+    let PlanInputs {
+        network,
+        height,
+        mut input_pools,
+        recipients,
+        src_pools,
+        recipient_pays_fee,
+        confirmations,
+        smart_transparent,
+        migration,
+        issuance,
+        preselected,
+    } = inp;
+
     let max_height = height.saturating_sub(confirmations);
     for pool in 0..NUM_POOLS {
         if src_pools & (1 << pool) == 0 {
@@ -225,7 +326,6 @@ pub async fn plan_transaction(
         }
     }
 
-    let recipients = recipients.to_vec();
     let (mut input_pools, recipients, recipient_pays_fee) = if smart_transparent {
         let mut notes = std::mem::take(&mut input_pools[0]);
         // Group by taddress, pick one random address to shield
@@ -254,8 +354,14 @@ pub async fn plan_transaction(
         (input_pools, recipients, recipient_pays_fee)
     };
 
-    let ironwood_active = network
-        .is_nu_active(NetworkUpgrade::Nu6_3, BlockHeight::from_u32(height));
+    let ironwood_active =
+        network.is_nu_active(NetworkUpgrade::Nu6_3, BlockHeight::from_u32(height));
+    let orchard_note_version =
+        if BranchId::for_height(network, BlockHeight::from_u32(height)) == BranchId::Nu7 {
+            orchard::NoteVersion::V3ZSA
+        } else {
+            orchard::NoteVersion::V2
+        };
     let decomposed: Vec<DecomposedRecipient> = recipients
         .iter()
         .map(|r| {
@@ -277,7 +383,9 @@ pub async fn plan_transaction(
         .collect::<Result<Vec<_>>>()?;
 
     // ZSA and Ironwood are mutually exclusive (different V6 version group IDs).
-    let has_zsa = decomposed.iter().any(|d| d.asset_base != [0u8; 32].to_vec())
+    let has_zsa = decomposed
+        .iter()
+        .any(|d| d.asset_base != [0u8; 32].to_vec())
         || issuance.is_some();
     if has_zsa && ironwood_active {
         anyhow::bail!("ZSA and Ironwood are incompatible");
@@ -294,10 +402,6 @@ pub async fn plan_transaction(
         .filter_map(|b| b.try_into().ok())
         .collect();
 
-    // ── Compute additional context ───────────────────────────────────────
-    let dindex = get_account_dindex(connection, account).await?;
-    let hw = get_account_hw(&mut *connection, account).await?;
-
     // Compute weighted average price from recipients that have a price set
     let mut total_amount = 0;
     let mut total_fiat = 0.0;
@@ -313,23 +417,26 @@ pub async fn plan_transaction(
         None
     };
 
-    let (use_internal,): (bool,) =
-        sqlx::query_as("SELECT use_internal FROM accounts WHERE id_account = ?")
-            .bind(account)
-            .fetch_one(&mut *connection)
-            .await?;
-
-    // Remove dust notes (too small to pay for a single logical action)
+    // Remove ZEC dust notes (too small to pay for a single logical action).
+    // ZSA amounts are denominated in their own asset and cannot pay fees, so
+    // comparing them against the zatoshi fee threshold is meaningless.
     let before_dust: [usize; NUM_POOLS] = std::array::from_fn(|p| input_pools[p].len());
     for pool in input_pools.iter_mut() {
-        pool.retain(|n| n.amount >= COST_PER_ACTION);
+        pool.retain(|n| {
+            let is_zec = n.asset_base.is_empty() || n.asset_base.iter().all(|&byte| byte == 0);
+            !is_zec || n.amount >= COST_PER_ACTION
+        });
     }
     info!(
         "plan: after dust filter — t:{}→{}, s:{}→{}, o:{}→{}, iw:{}→{}",
-        before_dust[0], input_pools[0].len(),
-        before_dust[1], input_pools[1].len(),
-        before_dust[2], input_pools[2].len(),
-        before_dust[3], input_pools[3].len(),
+        before_dust[0],
+        input_pools[0].len(),
+        before_dust[1],
+        input_pools[1].len(),
+        before_dust[2],
+        input_pools[2].len(),
+        before_dust[3],
+        input_pools[3].len(),
     );
 
     // Build asset→index lookup: 0 = ZEC, 1+ = index into zsa_assets
@@ -362,9 +469,31 @@ pub async fn plan_transaction(
         .enumerate()
         .flat_map(|(pool, notes)| {
             let zi = zi.clone();
-            notes.iter().enumerate().map(move |(idx, n)| {
-                let asset_index = resolve_asset_index(&n.asset_base, zec_key, &zi);
-                solve::Note { pool: pool as u8, amount: n.amount, pool_index: idx, asset_index }
+            notes.iter().enumerate().filter_map(move |(idx, n)| {
+                // Classify by the note's real asset: ZEC → 0, a recipient ZSA
+                // asset → its solver index. A ZSA note whose asset is NOT one of
+                // the recipient assets can't fund this payment (it isn't ZEC and
+                // has no matching output), so drop it from the candidate set.
+                // Mapping it to index 0 (the old `unwrap_or(0)` behaviour) let the
+                // solver treat it as spendable ZEC: it would then "pay" the fee
+                // with phantom ZEC while the builder spent the note as its real
+                // asset, leaving that asset over-spent and the ZEC change unbacked
+                // (Orchard IO-finalize → ValueCommitMismatch).
+                let asset_bytes: [u8; 32] = n.asset_base.clone().try_into().unwrap_or(zec_key);
+                let asset_index = if asset_bytes == zec_key {
+                    0
+                } else {
+                    match zi.get(&asset_bytes) {
+                        Some(&i) => i,
+                        None => return None,
+                    }
+                };
+                Some(solve::Note {
+                    pool: pool as u8,
+                    amount: n.amount,
+                    pool_index: idx,
+                    asset_index,
+                })
             })
         })
         .collect();
@@ -386,14 +515,18 @@ pub async fn plan_transaction(
         .zip(decomposed.iter())
         .map(|(&pool, dr)| {
             let asset_index = resolve_asset_index(&dr.asset_base, zec_key, &zsa_index);
-            solve::Output { pool, amount: dr.amount, asset_index }
+            solve::Output {
+                pool,
+                amount: dr.amount,
+                asset_index,
+            }
         })
         .collect();
 
     info!(
-        "plan: calling select_notes — {} input notes, {} outputs, migration={}, recipient_pays_fee={}, first_recipient={}, mode={:?}",
+        "plan: calling select_notes — {} input notes, {} outputs, migration={}, recipient_pays_fee={}, first_recipient={}",
         select_notes_input.len(), select_outputs.len(), migration, recipient_pays_fee,
-        recipients.first().map(|r| r.amount).unwrap_or(0), mode
+        recipients.first().map(|r| r.amount).unwrap_or(0)
     );
     for o in &select_outputs {
         info!("plan: output pool={} amount={}", o.pool, o.amount);
@@ -406,13 +539,14 @@ pub async fn plan_transaction(
         migration,
         recipient_pays_fee,
         recipients.first().map(|r| r.amount).unwrap_or(0),
-        mode,
     )
-    .ok_or_else(|| anyhow!("No feasible note selection found"))?;
+    .ok_or_else(|| anyhow::Error::new(crate::pay::error::Error::NoFeasibleSelection))?;
 
     info!(
         "plan: select_notes succeeded — fee={}, change_pool={}, selected_inputs={}",
-        selection.fee, selection.change_pool, selection.inputs.len()
+        selection.fee,
+        selection.change_pool,
+        selection.inputs.len()
     );
 
     // Mark selected notes as fully consumed (select_notes uses 0/1 knapsack)
@@ -526,22 +660,14 @@ pub async fn plan_transaction(
         );
     }
 
-    // ── Fetch tree states and anchors ────────────────────────────────────
-    let h = crate::sync::get_db_height(connection, account).await?;
-    let (ts, to, ti) = crate::sync::get_tree_state(network, client, h.height).await?;
-    let es = ts.to_edge(&SaplingHasher::default());
-    let eo = to.to_edge(&OrchardHasher::default());
-    let ei = ti.to_edge(&OrchardHasher::default());
-    let sapling_anchor = es.root(&SaplingHasher::default());
-    let orchard_anchor = eo.root(&OrchardHasher::default());
-    let ironwood_anchor = ei.root(&OrchardHasher::default());
-
     // Determine which pools are active in this transaction
     let mut has_pool = [false; NUM_POOLS as usize];
     for pool in 1..NUM_POOLS {
         let p = pool as u8;
         has_pool[pool] = input_pools[pool].iter().any(|inp| inp.is_used())
-            || recipient_states.iter().any(|r| r.pool_mask.to_best_pool() == Some(p))
+            || recipient_states
+                .iter()
+                .any(|r| r.pool_mask.to_best_pool() == Some(p))
             || change_pool == p;
     }
     has_pool[3] &= ironwood_active;
@@ -549,16 +675,103 @@ pub async fn plan_transaction(
     // when ZSA is present (covers issuance-only case with no ZSA notes).
     has_pool[2] |= has_zsa;
 
+    Ok(PlanOutputs {
+        input_pools,
+        recipient_states,
+        change,
+        change_pool,
+        fee,
+        has_pool,
+        ironwood_active,
+        orchard_note_version,
+        price,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn plan_transaction(
+    network: &Network,
+    connection: &mut SqliteConnection,
+    client: &mut Client,
+    account: u32,
+    src_pools: u8,
+    recipients: &[Recipient],
+    recipient_pays_fee: bool,
+    confirmations: Option<u32>,
+    smart_transparent: bool,
+    category: Option<u32>,
+    issuance: Option<&IssuanceInfo>,
+    migration: bool,
+    preselected: Option<&[u32]>,
+    anchor_height: Option<u32>,
+) -> Result<PcztPackage> {
+    let input_pools = fetch_unspent_notes_by_pool(connection, account).await?;
+    let height = client.latest_height().await?;
+    let confirmations = confirmations.unwrap_or_default();
+
+    // DB-sourced context needed only by the builder half below (change address
+    // and keys); the pure planning core does not touch the database.
+    let dindex = get_account_dindex(connection, account).await?;
+    let hw = get_account_hw(&mut *connection, account).await?;
+    let (use_internal,): (bool,) =
+        sqlx::query_as("SELECT use_internal FROM accounts WHERE id_account = ?")
+            .bind(account)
+            .fetch_one(&mut *connection)
+            .await?;
+
+    // ── Note selection and output planning (pure; unit-tested) ────────────
+    let PlanOutputs {
+        input_pools,
+        mut recipient_states,
+        change,
+        change_pool,
+        has_pool,
+        ironwood_active,
+        orchard_note_version,
+        price,
+        ..
+    } = plan_outputs(PlanInputs {
+        network,
+        height,
+        input_pools,
+        recipients: recipients.to_vec(),
+        src_pools,
+        recipient_pays_fee,
+        confirmations,
+        smart_transparent,
+        migration,
+        issuance,
+        preselected,
+    })?;
+
+    let zec_key = [0u8; 32];
+
+    // ── Fetch tree states and anchors ────────────────────────────────────
+    let h = crate::sync::get_db_height(connection, account).await?;
+    let anchor_height = anchor_height.unwrap_or(h.height);
+    anyhow::ensure!(
+        anchor_height <= h.height,
+        "Anchor height {anchor_height} is ahead of checkpoint {}",
+        h.height,
+    );
+    anyhow::ensure!(
+        !migration || anchor_height == h.height,
+        "Migration anchor {anchor_height} no longer matches checkpoint {}",
+        h.height,
+    );
+    let (ts, to, ti) = crate::sync::get_tree_state(network, client, anchor_height).await?;
+    let es = ts.to_edge(&SaplingHasher::default());
+    let eo = to.to_edge(&OrchardHasher::default());
+    let ei = ti.to_edge(&OrchardHasher::default());
+    let sapling_anchor = es.root(&SaplingHasher::default());
+    let orchard_anchor = eo.root(&OrchardHasher::default());
+    let ironwood_anchor = ei.root(&OrchardHasher::default());
+
     // ── Fetch change address ─────────────────────────────────────────────
     let change_scope = if use_internal { 1 } else { 0 };
-    let mut change_address =
+    let change_address =
         get_account_full_address(network, connection, account, change_scope, hw).await?;
     let tkeys = select_account_transparent(connection, account, dindex).await?;
-    if change_pool == 0 && tkeys.xvk.is_some() {
-        change_address = generate_next_change_address(network, connection, account)
-            .await?
-            .unwrap();
-    }
 
     // Fill in ZSA change output addresses
     for rs in &mut recipient_states {
@@ -593,8 +806,23 @@ pub async fn plan_transaction(
         } else {
             None
         },
+        orchard_padding: BundlePadding::DEFAULT,
+        ironwood_padding: BundlePadding::DEFAULT,
     };
     let mut builder = Builder::new(network, BlockHeight::from_u32(target_height), build_config);
+
+    // Hardware (Ledger) wallets only support v5 (ZIP-244) transaction signing.
+    // The Zondax "Zcash Shielded" app predates NU6.3 and cannot sign v6/Ironwood
+    // transactions, so force a v5 tx while keeping consensus_branch_id = Nu6_3
+    // (V5 is valid in Nu6_3 per TxVersion::valid_in_branch). A v5 tx carrying the
+    // current Nu6_3 branch id is valid on the network. The official Ledger app
+    // supports v6/Ironwood signing and must not be forced to v5, otherwise any
+    // tx carrying Ironwood spends fails to build.
+    if hw == HwKind::Zondax as u8 {
+        builder
+            .propose_version::<()>(TxVersion::V5)
+            .map_err(|e| anyhow!("failed to force v5 for hardware signing: {e:?}"))?;
+    }
 
     let es = es.to_auth_path(&SaplingHasher::default());
     let eo = eo.to_auth_path(&OrchardHasher::default());
@@ -650,23 +878,19 @@ pub async fn plan_transaction(
                         } else {
                             pubkey.serialize().to_vec()
                         };
-                        let pkh: [u8; 20] =
-                            Ripemd160::digest(Sha256::digest(&pk_bytes)).into();
+                        let pkh: [u8; 20] = Ripemd160::digest(Sha256::digest(&pk_bytes)).into();
                         let addr = TransparentAddress::PublicKeyHash(pkh);
-                        let coin = TxOut::new(
-                            Zatoshis::from_u64(*amount).unwrap(),
-                            addr.script().into(),
-                        );
+                        let coin =
+                            TxOut::new(Zatoshis::from_u64(*amount).unwrap(), addr.script().into());
 
-                        builder
-                            .add_transparent_input(
-                                TransparentInputInfo::from_parts(
-                                    utxo,
-                                    coin,
-                                    SpendInfo::P2pkh { pubkey },
-                                )
-                                .map_err(|e: zcash_transparent::builder::Error| anyhow!(e))?,
-                            );
+                        builder.add_transparent_input(
+                            TransparentInputInfo::from_parts(
+                                utxo,
+                                coin,
+                                SpendInfo::P2pkh { pubkey },
+                            )
+                            .map_err(|e: zcash_transparent::builder::Error| anyhow!(e))?,
+                        );
                         tsk_dindex.push((pubkey, scope, dindex_t, taddress, uncompressed));
                     }
                     1 => {
@@ -690,7 +914,6 @@ pub async fn plan_transaction(
                         s_scope.push(scope);
                     }
                     2 => {
-
                         let (note, merkle_path) = get_orchard_note(
                             connection,
                             *id,
@@ -698,7 +921,8 @@ pub async fn plan_transaction(
                             ovk.as_ref().unwrap(),
                             &eo,
                             &ero,
-                            orchard::NoteVersion::V2,
+                            orchard_note_version,
+                            (!migration && anchor_height < h.height).then_some(eo.1),
                         )
                         .await?;
 
@@ -721,6 +945,7 @@ pub async fn plan_transaction(
                             &ei,
                             &ero,
                             orchard::NoteVersion::V3,
+                            (!migration && anchor_height < h.height).then_some(ei.1),
                         )
                         .await?;
 
@@ -773,11 +998,13 @@ pub async fn plan_transaction(
                 let asset_base = if r.asset_base == [0u8; 32].to_vec() {
                     AssetBase::zatoshi()
                 } else {
-                    let asset_bytes: [u8; 32] = r.asset_base.clone().try_into().map_err(
-                        |v: Vec<u8>| anyhow!("Invalid asset_base length: expected 32, got {}", v.len()),
-                    )?;
-                    Option::from(AssetBase::from_bytes(&asset_bytes))
-                        .ok_or_else(|| anyhow!("Invalid asset_base bytes: {}", hex::encode(&asset_bytes)))?
+                    let asset_bytes: [u8; 32] =
+                        r.asset_base.clone().try_into().map_err(|v: Vec<u8>| {
+                            anyhow!("Invalid asset_base length: expected 32, got {}", v.len())
+                        })?;
+                    Option::from(AssetBase::from_bytes(&asset_bytes)).ok_or_else(|| {
+                        anyhow!("Invalid asset_base bytes: {}", hex::encode(&asset_bytes))
+                    })?
                 };
                 if ironwood_active {
                     // O->O self-send: use change output to avoid dummy-spend
@@ -820,9 +1047,7 @@ pub async fn plan_transaction(
     // ── Add change output ────────────────────────────────────────────────
     if change > 0 {
         let change_addr = if change_pool == 0 && tkeys.xvk.is_some() {
-            generate_next_change_address(network, connection, account)
-                .await?
-                .unwrap()
+            transparent_change_address(connection, account, use_internal, dindex).await?
         } else {
             change_address.clone()
         };
@@ -900,11 +1125,56 @@ pub async fn plan_transaction(
 
     let r = builder.build_for_pczt(OsRng, &FeeRule::standard(), |_asset: &AssetBase| false)?;
     let sapling_meta = &r.sapling_meta;
-    let orchard_meta = &r.orchard_meta;
     let ironwood_meta = &r.ironwood_meta;
 
     let pczt = Creator::build_from_parts(r.pczt_parts).unwrap();
     info!("Created");
+
+    let mut asset_names = sqlx::query(
+        "SELECT asset_base, asset_name FROM assets
+         WHERE asset_name IS NOT NULL AND asset_name != ''",
+    )
+    .map(|row: SqliteRow| {
+        let asset_base: Vec<u8> = row.get(0);
+        let asset_name: String = row.get(1);
+        (asset_base, asset_name)
+    })
+    .fetch_all(&mut *connection)
+    .await?
+    .into_iter()
+    .filter_map(|(asset_base, asset_name)| {
+        asset_base
+            .try_into()
+            .ok()
+            .map(|asset_base| (asset_base, asset_name))
+    })
+    .collect::<HashMap<[u8; 32], String>>();
+    for recipient in &recipient_states {
+        if let (Ok(asset_base), Some(asset_name)) = (
+            recipient.asset_base.as_slice().try_into(),
+            recipient.recipient.asset_name.as_ref(),
+        ) {
+            if !asset_name.is_empty() {
+                asset_names.insert(asset_base, asset_name.clone());
+            }
+        }
+    }
+
+    // An external signer identifies its own inputs by the ZIP-32 seed
+    // fingerprint and the full BIP-44 path. Both were previously placeholders
+    // — a zeroed fingerprint and a two-element path — which nothing checked,
+    // because signing happened locally. A hardware wallet does check, and
+    // rejects the transaction as belonging to a different wallet.
+    let seed_fingerprint: [u8; 32] = crate::db::get_account_fingerprint(&mut *connection, account)
+        .await?
+        .and_then(|fp| <[u8; 32]>::try_from(fp).ok())
+        .unwrap_or([0u8; 32]);
+    let aindex = crate::db::get_account_aindex(&mut *connection, account).await?;
+    const HARDENED: u32 = 0x8000_0000;
+    let coin_type: u32 = match network {
+        Network::Main => 133,
+        _ => 1,
+    };
 
     let updater = Updater::new(pczt);
     let updater = updater
@@ -913,8 +1183,14 @@ pub async fn plan_transaction(
                 tsk_dindex.into_iter().enumerate()
             {
                 u.update_input_with(i, |mut u| {
-                    let derivation_path = vec![scope, dindex_t];
-                    let path = Bip32Derivation::parse([0u8; 32], derivation_path).unwrap();
+                    let derivation_path = vec![
+                        44 | HARDENED,
+                        coin_type | HARDENED,
+                        aindex | HARDENED,
+                        scope,
+                        dindex_t,
+                    ];
+                    let path = Bip32Derivation::parse(seed_fingerprint, derivation_path).unwrap();
                     u.set_bip32_derivation(pubkey.serialize(), path);
                     u.set_proprietary("scope".to_string(), scope.to_le_bytes().to_vec());
                     u.set_proprietary("dindex".to_string(), dindex_t.to_le_bytes().to_vec());
@@ -926,6 +1202,27 @@ pub async fn plan_transaction(
                         pubkey.serialize().to_vec()
                     };
                     u.set_hash160_preimage(pk_bytes);
+                    Ok(())
+                })?;
+            }
+
+            // An external signer shows the recipient of every transparent
+            // output for review, and refuses one it cannot name. The address is
+            // recoverable from the script, but the signer will not derive it
+            // itself, so state it here.
+            let recipients = u
+                .bundle()
+                .outputs()
+                .iter()
+                .map(|o| {
+                    TransparentAddress::from_script_pubkey(&o.script_pubkey().clone().into())
+                        .map(|addr| addr.encode(network))
+                })
+                .collect::<Vec<_>>();
+            for (i, recipient) in recipients.into_iter().enumerate() {
+                let Some(recipient) = recipient else { continue };
+                u.update_output_with(i, |mut u| {
+                    u.set_user_address(recipient);
                     Ok(())
                 })?;
             }
@@ -945,6 +1242,65 @@ pub async fn plan_transaction(
             Ok(())
         })
         .unwrap();
+
+    let updater =
+        if BranchId::for_height(network, BlockHeight::from_u32(target_height)) == BranchId::Nu7 {
+            updater.update_orchard_zsa_with(|u| attach_orchard_asset_names(u, &asset_names))
+        } else {
+            updater.update_orchard_with(|u| attach_orchard_asset_names(u, &asset_names))
+        }
+        .map_err(|error| anyhow!("Failed to attach Orchard asset names: {error:?}"))?;
+
+    // Shielded spends carry no key material of their own, so an external
+    // signer identifies them by the ZIP-32 path of the account that can spend
+    // them. Without this the spend reaches the device with no derivation at
+    // all and is refused as belonging to another wallet.
+    //
+    // Orchard requires every element hardened, and the path is exactly the
+    // three-element m/32'/coin_type'/account' — not the five-element BIP 44
+    // path used for transparent inputs, which this rejects.
+    let orchard_zip32 = || {
+        orchard::pczt::Zip32Derivation::parse(
+            seed_fingerprint,
+            vec![32 | HARDENED, coin_type | HARDENED, aindex | HARDENED],
+        )
+        .expect("orchard ZIP-32 path is fully hardened")
+    };
+
+    // Dummy spends are the builder's padding and belong to nobody, so leave
+    // them unclaimed.
+    fn real_spend_indices(bundle: &orchard::pczt::Bundle) -> Vec<usize> {
+        bundle
+            .actions()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, a)| a.spend().dummy_sk().is_none().then_some(i))
+            .collect()
+    }
+
+    let updater = updater
+        .update_orchard_with(|mut u| {
+            for i in real_spend_indices(u.bundle()) {
+                u.update_action_with(i, |mut a| {
+                    a.set_spend_zip32_derivation(orchard_zip32());
+                    Ok(())
+                })?;
+            }
+            Ok(())
+        })
+        .map_err(|e| anyhow!("orchard updater failed: {e:?}"))?;
+
+    let updater = updater
+        .update_ironwood_with(|mut u| {
+            for i in real_spend_indices(u.bundle()) {
+                u.update_action_with(i, |mut a| {
+                    a.set_spend_zip32_derivation(orchard_zip32());
+                    Ok(())
+                })?;
+            }
+            Ok(())
+        })
+        .map_err(|e| anyhow!("ironwood updater failed: {e:?}"))?;
 
     let pczt = updater.finish();
 
@@ -974,38 +1330,20 @@ pub async fn plan_transaction(
         pczt
     };
 
-    let migration_orchard_outputs = migration
-        && recipient_states
-            .iter()
-            .any(|r| r.pool_mask.to_best_pool() == Some(2));
-    let n_orchard_actions = pczt.orchard().actions().len();
+    let orchard_indices = pczt
+        .orchard()
+        .actions()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, action)| action.spend().spend_auth_sig().is_none().then_some(index))
+        .collect();
     let pczt_package = PcztPackage {
         pczt: pczt.serialize().unwrap(),
         n_spends: [n_spends[0], n_spends[1], n_spends[2], n_spends[3]],
         sapling_indices: (0..n_spends[1])
             .map(|n| sapling_meta.spend_index(n).unwrap())
             .collect(),
-        orchard_indices: if ironwood_active && (!migration || migration_orchard_outputs) {
-            // Orchard V3 / NU6.3+: sign all actions (incl. change-output pairs).
-            // O→I migration is excluded (dummy orchard spend must not be signed).
-            (0..n_orchard_actions).collect()
-        } else {
-            let mut indices: Vec<usize> = (0..n_spends[2])
-                .map(|n| orchard_meta.spend_action_index(n).unwrap())
-                .collect();
-            // Pre-NU6.3 orchard change uses add_orchard_output (IO Finalizer
-            // handles dummies). Only NU6.3+ orchard change needs output indices.
-            if migration || (ironwood_active && change_pool == 2 && change > 0) {
-                let mut n = 0;
-                while let Some(idx) = orchard_meta.output_action_index(n) {
-                    if !indices.contains(&idx) {
-                        indices.push(idx);
-                    }
-                    n += 1;
-                }
-            }
-            indices
-        },
+        orchard_indices,
         ironwood_indices: (0..n_spends[3])
             .map(|n| ironwood_meta.spend_action_index(n).unwrap())
             .collect(),
@@ -1037,7 +1375,7 @@ fn encode_memo(recipient: &Recipient) -> Result<Option<MemoBytes>> {
 pub async fn sign_transaction(
     connection: &mut SqliteConnection,
     account: u32,
-    network: &crate::api::coin::Network,
+    _network: &crate::api::coin::Network,
     pczt: &PcztPackage,
 ) -> Result<PcztPackage> {
     let span = span!(Level::INFO, "transaction");
@@ -1053,12 +1391,9 @@ pub async fn sign_transaction(
         is_issuance,
         ..
     } = pczt;
-    let pczt = Pczt::parse(pczt).unwrap();
-
-    let ironwood_active = network.is_nu_active(
-        NetworkUpgrade::Nu6_3,
-        BlockHeight::from_u32(*pczt.global().expiry_height()),
-    );
+    let pczt = Pczt::parse(pczt)
+        .map_err(|error| anyhow!("failed to parse PCZT for signing: {error:?}"))?;
+    let orchard_pk = get_orchard_pk(*pczt.global().consensus_branch_id())?;
 
     let dindex = get_account_dindex(connection, account).await?;
     let tkeys = select_account_transparent(connection, account, dindex).await?;
@@ -1195,7 +1530,9 @@ pub async fn sign_transaction(
         let Some(osak) = osak.as_ref() else {
             return Err(Error::NoSigningKey.into());
         };
-        signer.sign_orchard(*bundle_index, osak).unwrap();
+        signer.sign_orchard(*bundle_index, osak).map_err(|e| {
+            anyhow!("failed to sign Orchard action {bundle_index} (selected spend {index}): {e:?}")
+        })?;
     }
     for (index, bundle_index) in ironwood_indices.iter().enumerate() {
         info!("signing ironwood {index}");
@@ -1211,27 +1548,104 @@ pub async fn sign_transaction(
     });
     let sapling_prover = get_sapling_prover().await?;
 
-    let orchard_pk = get_orchard_pk(network, ironwood_active);
     let pczt = Prover::new(pczt)
         .create_sapling_proofs(sapling_prover, sapling_prover)
-        .unwrap()
+        .map_err(|error| anyhow!("failed to create Sapling proofs: {error:?}"))?
         .create_orchard_proof(orchard_pk)
-        .unwrap()
+        .map_err(|error| anyhow!("failed to create Orchard proof: {error:?}"))?
         .create_ironwood_proof(&IRONWOOD_PK)
-        .unwrap()
+        .map_err(|error| anyhow!("failed to create Ironwood proof: {error:?}"))?
         .finish();
     info!("Proved");
 
-    let pczt = SpendFinalizer::new(pczt).finalize_spends().unwrap();
+    let pczt = SpendFinalizer::new(pczt)
+        .finalize_spends()
+        .map_err(|error| anyhow!("failed to finalize PCZT spends: {error:?}"))?;
     info!("Spend Finalized");
 
     Ok(PcztPackage {
-        pczt: pczt.serialize().unwrap(),
+        pczt: pczt
+            .serialize()
+            .map_err(|error| anyhow!("failed to serialize signed PCZT: {error:?}"))?,
         n_spends: *n_spends,
         sapling_indices: sapling_indices.clone(),
         orchard_indices: orchard_indices.clone(),
         ironwood_indices: ironwood_indices.clone(),
         can_sign: true,
+        can_broadcast: true,
+        price: *price,
+        category: *category,
+        is_issuance: *is_issuance,
+    })
+}
+
+/// Proves and finalizes a PCZT whose signatures were produced elsewhere (an
+/// airgapped signer such as Keystone or Cupcake, which never proves).
+///
+/// This is the second half of [`sign_transaction`]: the caller supplies a PCZT
+/// that already carries spend authorization signatures, and this runs the
+/// Prover and Spend Finalizer so the result can be extracted and broadcast.
+/// No spending keys are touched, so it is safe for watch-only accounts.
+pub async fn prove_and_finalize(
+    _network: &crate::api::coin::Network,
+    package: &PcztPackage,
+) -> Result<PcztPackage> {
+    let span = span!(Level::INFO, "transaction");
+
+    let PcztPackage {
+        pczt,
+        n_spends,
+        sapling_indices,
+        orchard_indices,
+        ironwood_indices,
+        price,
+        category,
+        is_issuance,
+        ..
+    } = package;
+    // A PCZT signed by the Cupcake signer comes back in the older encoding it
+    // reads; translate it rather than refusing it.
+    let pczt = match Pczt::parse(pczt) {
+        Ok(pczt) => pczt,
+        Err(e) => {
+            let translated = crate::keystone_wire::from_cupcake(pczt)
+                .map_err(|_| anyhow!("failed to parse PCZT: {e:?}"))?;
+            Pczt::parse(&translated).map_err(|e| anyhow!("failed to parse PCZT: {e:?}"))?
+        }
+    };
+
+    span.in_scope(|| {
+        info!("Adding Proofs to externally signed PCZT");
+    });
+
+    let sapling_prover = get_sapling_prover().await?;
+    // The proving key follows the branch the PCZT was built for (vanilla
+    // Orchard, ZSA or Ironwood circuits), not the current network state.
+    let orchard_pk = get_orchard_pk(*pczt.global().consensus_branch_id())?;
+    let pczt = Prover::new(pczt)
+        .create_sapling_proofs(sapling_prover, sapling_prover)
+        .map_err(|e| anyhow!("sapling proving failed: {e:?}"))?
+        .create_orchard_proof(orchard_pk)
+        .map_err(|e| anyhow!("orchard proving failed: {e:?}"))?
+        .create_ironwood_proof(&IRONWOOD_PK)
+        .map_err(|e| anyhow!("ironwood proving failed: {e:?}"))?
+        .finish();
+    info!("Proved");
+
+    let pczt = SpendFinalizer::new(pczt)
+        .finalize_spends()
+        .map_err(|e| anyhow!("spend finalization failed: {e:?}"))?;
+    info!("Spend Finalized");
+
+    Ok(PcztPackage {
+        pczt: pczt
+            .serialize()
+            .map_err(|e| anyhow!("failed to serialize PCZT: {e:?}"))?,
+        n_spends: *n_spends,
+        sapling_indices: sapling_indices.clone(),
+        orchard_indices: orchard_indices.clone(),
+        ironwood_indices: ironwood_indices.clone(),
+        can_sign: false,
         can_broadcast: true,
         price: *price,
         category: *category,
@@ -1265,7 +1679,9 @@ pub async fn extract_transaction(package: &PcztPackage) -> Result<Vec<u8>> {
             tx.write(&mut tx_bytes).unwrap();
             info!("Tx Extracted");
             span.in_scope(|| {
-                info!("TX HEX: {}", hex::encode(&tx_bytes));
+                // Multi-kilobyte; only wanted when inspecting a specific
+                // transaction, and it drowns out everything else in a log.
+                debug!("TX HEX: {}", hex::encode(&tx_bytes));
                 info!("Tx Ready - {} bytes", tx_bytes.len());
             });
             return Ok(tx_bytes);
@@ -1346,7 +1762,6 @@ fn get_orchard_address(network: &Network, address: &str) -> Result<Address> {
         anyhow::bail!("Invalid orchard address: {address}");
     }
 }
-
 
 pub async fn fetch_unspent_notes_grouped_by_pool(
     connection: &mut SqliteConnection,
@@ -1437,46 +1852,597 @@ pub async fn get_sapling_prover() -> Result<&'static LocalTxProver> {
     static PROVER: tokio::sync::OnceCell<LocalTxProver> = tokio::sync::OnceCell::const_new();
     PROVER
         .get_or_try_init(|| async {
-            let params_dir = crate::api::sapling::resolve_params_dir()
-                .ok_or_else(|| anyhow::anyhow!("Failed to resolve Sapling parameters directory"))?;
-            let spend_path = params_dir.join(zcash_proofs::SAPLING_SPEND_NAME);
-            let output_path = params_dir.join(zcash_proofs::SAPLING_OUTPUT_NAME);
-
-            if spend_path.exists() && output_path.exists() {
-                return Ok(LocalTxProver::new(&spend_path, &output_path));
+            #[cfg(feature = "bundled-sapling-params")]
+            {
+                // Parameters compiled into the binary — never touch disk or network.
+                return Ok(LocalTxProver::bundled());
             }
-            // Parameters not found on disk — download them.
-            crate::api::sapling::download_sapling_params().await?;
-            Ok(LocalTxProver::new(&spend_path, &output_path))
+            #[cfg(not(feature = "bundled-sapling-params"))]
+            {
+                let params_dir = crate::api::sapling::resolve_params_dir().ok_or_else(|| {
+                    anyhow::anyhow!("Failed to resolve Sapling parameters directory")
+                })?;
+                let spend_path = params_dir.join(zcash_proofs::SAPLING_SPEND_NAME);
+                let output_path = params_dir.join(zcash_proofs::SAPLING_OUTPUT_NAME);
+
+                if spend_path.exists() && output_path.exists() {
+                    return Ok(LocalTxProver::new(&spend_path, &output_path));
+                }
+                // Parameters not found on disk — download them.
+                crate::api::sapling::download_sapling_params().await?;
+                Ok(LocalTxProver::new(&spend_path, &output_path))
+            }
         })
         .await
 }
 pub static ORCHARD_VANILLA_PK: LazyLock<ProvingKey> =
     LazyLock::new(|| ProvingKey::build(orchard::circuit::OrchardCircuitVersion::FixedPostNu6_2));
-pub static ORCHARD_ZSA_PK: LazyLock<ProvingKey> =
-    LazyLock::new(|| ProvingKey::build(orchard::circuit::OrchardCircuitVersion::ZsaFixed));
+pub static ORCHARD_ZSA_PK: LazyLock<ProvingKey> = LazyLock::new(|| ProvingKey::build_zsa());
 pub static IRONWOOD_PK: LazyLock<ProvingKey> =
     LazyLock::new(|| ProvingKey::build(orchard::circuit::OrchardCircuitVersion::PostNu6_3));
 
-pub fn get_orchard_pk(
-    network: &crate::api::coin::Network,
-    ironwood_active: bool,
-) -> &'static ProvingKey {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OrchardProvingKeyKind {
+    Vanilla,
+    Zsa,
+    Ironwood,
+}
+
+fn orchard_proving_key_kind(branch_id: BranchId) -> OrchardProvingKeyKind {
+    match branch_id {
+        BranchId::Nu7 => OrchardProvingKeyKind::Zsa,
+        BranchId::Nu6_3 => OrchardProvingKeyKind::Ironwood,
+        _ => OrchardProvingKeyKind::Vanilla,
+    }
+}
+
+pub(crate) fn get_orchard_pk(consensus_branch_id: u32) -> Result<&'static ProvingKey> {
     // ZSA and Ironwood are mutually exclusive hard forks with different
     // V6 version group IDs and circuit versions.
-    let uses_orchard_zsa = match network {
-        crate::api::coin::Network::Regtest(config)
-        | crate::api::coin::Network::ZsaRegtest(config) => {
-            config.orchard_mode() == zcash_protocol::consensus::OrchardMode::Zsa
-        }
-        _ => false,
-    };
+    let branch_id = BranchId::try_from(consensus_branch_id)
+        .map_err(|_| anyhow!("unsupported consensus branch ID: {consensus_branch_id:#x}"))?;
+    Ok(match orchard_proving_key_kind(branch_id) {
+        OrchardProvingKeyKind::Vanilla => &ORCHARD_VANILLA_PK,
+        OrchardProvingKeyKind::Zsa => &ORCHARD_ZSA_PK,
+        OrchardProvingKeyKind::Ironwood => &IRONWOOD_PK,
+    })
+}
 
-    if uses_orchard_zsa {
-        &ORCHARD_ZSA_PK
-    } else if ironwood_active {
-        &IRONWOOD_PK
-    } else {
-        &ORCHARD_VANILLA_PK
+#[cfg(test)]
+mod tests {
+    use super::{orchard_proving_key_kind, BranchId, OrchardProvingKeyKind};
+
+    #[test]
+    fn ironwood_activation_selects_ironwood_orchard_proving_key() {
+        assert_eq!(
+            orchard_proving_key_kind(BranchId::Nu6_3),
+            OrchardProvingKeyKind::Ironwood,
+        );
+        assert_eq!(
+            orchard_proving_key_kind(BranchId::Nu6_2),
+            OrchardProvingKeyKind::Vanilla,
+        );
+    }
+
+    #[test]
+    fn zsa_selects_zsa_orchard_proving_key() {
+        assert_eq!(
+            orchard_proving_key_kind(BranchId::Nu7),
+            OrchardProvingKeyKind::Zsa,
+        );
+    }
+
+    #[test]
+    fn tex_addresses_are_detected() {
+        use super::is_tex;
+        use crate::api::coin::Network;
+        // Test vectors from zcash_address encoding.rs (same hash as the
+        // t1.../tm... P2PKH addresses on the same line).
+        assert!(is_tex(&Network::Main, "tex1s2rt77ggv6q989lr49rkgzmh5slsksa9khdgte").unwrap());
+        assert!(!is_tex(&Network::Main, "t1VmmGiyjVNeCjxDZzg7vZmd99WyzVby9yC").unwrap());
+        assert!(is_tex(
+            &Network::Test,
+            "textest1qyqszqgpqyqszqgpqyqszqgpqyqszqgpfcjgfy"
+        )
+        .unwrap());
+        assert!(!is_tex(&Network::Test, "tm9ofD7kHR7AF8MsJomEzLqGcrLCBkD9gDj").unwrap());
+    }
+
+    // ------------------------------------------------------------------
+    // Fixtures and helpers for the pure planning-core tests below.
+    // These exercise `plan_outputs` — the note-selection and output-planning
+    // logic lifted out of `plan_transaction` — with no DB, client, or prover.
+    // ------------------------------------------------------------------
+    mod planning {
+        use super::super::*;
+        use crate::api::coin::Network;
+        use crate::pay::pool::ALL_POOLS;
+        use zcash_keys::address::UnifiedAddress;
+
+        // Mainnet single-pool address fixtures.
+        const T_ADDR: &str = "t1VmmGiyjVNeCjxDZzg7vZmd99WyzVby9yC";
+        const S_ADDR: &str =
+            "zs157m24pkqcq09edxz9p0p653xcsfpdpcspcad5wkkp3pq29hvc7h2uvs7wncakwqtl6jqkxn939p";
+        const TEX_ADDR: &str = "tex1s2rt77ggv6q989lr49rkgzmh5slsksa9khdgte";
+
+        fn net() -> Network {
+            Network::Main
+        }
+
+        /// A deterministic Orchard address derived from a fixed spending key.
+        fn orchard_addr() -> orchard::Address {
+            let sk = orchard::keys::SpendingKey::from_bytes([7u8; 32])
+                .into_option()
+                .expect("valid orchard spending key");
+            let fvk = orchard::keys::FullViewingKey::from(&sk);
+            fvk.address_at(0u32, orchard::keys::Scope::External)
+        }
+
+        fn sapling_addr() -> sapling_crypto::PaymentAddress {
+            sapling_crypto::PaymentAddress::decode(&net(), S_ADDR).expect("valid sapling address")
+        }
+
+        /// Orchard-only unified address.
+        fn ua_orchard() -> String {
+            UnifiedAddress::from_receivers(Some(orchard_addr()), None, None)
+                .unwrap()
+                .encode(&net())
+        }
+
+        /// Sapling-only unified address (still a UA container).
+        fn ua_sapling() -> String {
+            UnifiedAddress::from_receivers(None, Some(sapling_addr()), None)
+                .unwrap()
+                .encode(&net())
+        }
+
+        /// Mixed unified address carrying Orchard + Sapling receivers.
+        fn ua_mixed() -> String {
+            UnifiedAddress::from_receivers(Some(orchard_addr()), Some(sapling_addr()), None)
+                .unwrap()
+                .encode(&net())
+        }
+
+        fn note(id: u32, pool: u8, amount: u64, height: u32) -> InputNote {
+            InputNote {
+                id,
+                height,
+                amount,
+                remaining: amount,
+                pool,
+                id_asset: None,
+                asset_base: vec![],
+                taddress: (pool == 0).then_some(0),
+            }
+        }
+
+        /// Wrap flat notes into the per-pool layout `plan_outputs` expects.
+        fn pools(notes: Vec<InputNote>) -> Vec<Vec<InputNote>> {
+            let mut p = vec![vec![]; NUM_POOLS];
+            for n in notes {
+                p[n.pool as usize].push(n);
+            }
+            p
+        }
+
+        fn recipient(address: &str, amount: u64) -> Recipient {
+            Recipient {
+                address: address.to_string(),
+                amount,
+                ..Recipient::default()
+            }
+        }
+
+        /// Default `PlanInputs` for a plain (non-ZSA, non-migration) send at a
+        /// mainnet height where neither Ironwood nor NU7 is active.
+        fn plan_inputs<'a>(
+            network: &'a Network,
+            input_pools: Vec<Vec<InputNote>>,
+            recipients: Vec<Recipient>,
+        ) -> PlanInputs<'a> {
+            PlanInputs {
+                network,
+                height: 1_000_000,
+                input_pools,
+                recipients,
+                src_pools: ALL_POOLS,
+                recipient_pays_fee: false,
+                confirmations: 0,
+                smart_transparent: false,
+                migration: false,
+                issuance: None,
+                preselected: None,
+            }
+        }
+
+        fn selected_ids(out: &PlanOutputs) -> Vec<u32> {
+            out.input_pools
+                .iter()
+                .flatten()
+                .filter(|n| n.is_used())
+                .map(|n| n.id)
+                .collect()
+        }
+
+        fn total_selected(out: &PlanOutputs) -> u64 {
+            out.input_pools
+                .iter()
+                .flatten()
+                .filter(|n| n.is_used())
+                .map(|n| n.amount)
+                .sum()
+        }
+
+        // Broad invariants every feasible plan must satisfy — the cheapest way
+        // to catch the "subtle" over/under-spend bugs.
+        fn assert_plan_balances(out: &PlanOutputs) {
+            let total_output: u64 = out.recipient_states.iter().map(|r| r.recipient.amount).sum();
+            let total_input = total_selected(out);
+            assert!(
+                total_input >= total_output + out.fee,
+                "inputs {total_input} must cover outputs {total_output} + fee {}",
+                out.fee
+            );
+            assert_eq!(
+                out.change,
+                total_input - total_output - out.fee,
+                "change must reconcile inputs, outputs and fee",
+            );
+            // No selected ZEC note may sit below the per-action dust threshold.
+            for n in out.input_pools.iter().flatten().filter(|n| n.is_used()) {
+                let is_zec = n.asset_base.is_empty() || n.asset_base.iter().all(|&b| b == 0);
+                if is_zec {
+                    assert!(n.amount >= COST_PER_ACTION, "dust note {} selected", n.id);
+                }
+            }
+        }
+
+        // ---- Address decomposition: pool selection, UA single & mixed, TEX ----
+
+        #[test]
+        fn decompose_transparent_and_tex_target_pool_zero() {
+            let n = net();
+            assert_eq!(decompose_address(T_ADDR, &n, false).unwrap().pool, 0);
+            let tex = decompose_address(TEX_ADDR, &n, false).unwrap();
+            assert_eq!(tex.pool, 0);
+            assert!(matches!(tex.receiver, Receiver::P2pkh(_)));
+        }
+
+        #[test]
+        fn decompose_sapling_targets_pool_one() {
+            assert_eq!(decompose_address(S_ADDR, &net(), false).unwrap().pool, 1);
+        }
+
+        #[test]
+        fn decompose_ua_single_orchard_and_sapling() {
+            let n = net();
+            assert_eq!(decompose_address(&ua_orchard(), &n, false).unwrap().pool, 2);
+            assert_eq!(decompose_address(&ua_sapling(), &n, false).unwrap().pool, 1);
+        }
+
+        #[test]
+        fn decompose_ua_mixed_prefers_orchard() {
+            let n = net();
+            // Mixed O+S UA prefers the Orchard receiver.
+            assert_eq!(decompose_address(&ua_mixed(), &n, false).unwrap().pool, 2);
+            // When Ironwood is active the same receiver routes to pool 3.
+            assert_eq!(decompose_address(&ua_mixed(), &n, true).unwrap().pool, 3);
+        }
+
+        #[test]
+        fn ua_orchard_routes_output_through_orchard_pool() {
+            let n = net();
+            let ua = ua_orchard();
+            let input = plan_inputs(
+                &n,
+                pools(vec![note(1, 2, 1_000_000, 100)]),
+                vec![recipient(&ua, 100_000)],
+            );
+            let out = plan_outputs(input).unwrap();
+            assert_eq!(out.recipient_states.len(), 1);
+            assert_eq!(out.recipient_states[0].pool_mask.to_best_pool(), Some(2));
+            assert_plan_balances(&out);
+        }
+
+        #[test]
+        fn explicit_pool_hint_overrides_address_pool() {
+            let n = net();
+            // Mixed UA would default to Orchard, but an explicit Sapling hint
+            // (bit 1) forces the output into the Sapling pool.
+            let mut r = recipient(&ua_mixed(), 100_000);
+            r.pools = Some(0b0010);
+            let input = plan_inputs(
+                &n,
+                pools(vec![note(1, 2, 1_000_000, 100)]),
+                vec![r],
+            );
+            let out = plan_outputs(input).unwrap();
+            assert_eq!(out.recipient_states[0].pool_mask.to_best_pool(), Some(1));
+        }
+
+        // ---- Source pool selection ----
+
+        #[test]
+        fn src_pools_mask_restricts_candidate_notes() {
+            let n = net();
+            // Notes in every pool, but only Orchard (bit 2) is allowed.
+            let mut input = plan_inputs(
+                &n,
+                pools(vec![
+                    note(1, 0, 1_000_000, 100),
+                    note(2, 1, 1_000_000, 100),
+                    note(3, 2, 1_000_000, 100),
+                    note(4, 3, 1_000_000, 100),
+                ]),
+                vec![recipient(S_ADDR, 100_000)],
+            );
+            input.src_pools = 0b0100; // Orchard only
+            let out = plan_outputs(input).unwrap();
+            // Every selected note must come from the Orchard pool.
+            for id in selected_ids(&out) {
+                assert_eq!(id, 3, "only the Orchard note may be selected");
+            }
+            assert!(!selected_ids(&out).is_empty());
+            assert_plan_balances(&out);
+        }
+
+        #[test]
+        fn confirmations_filter_excludes_unconfirmed_notes() {
+            let n = net();
+            // The only funding note is above max_height (height - confirmations),
+            // so no feasible selection exists.
+            let mut input = plan_inputs(
+                &n,
+                pools(vec![note(1, 2, 1_000_000, 999_999)]),
+                vec![recipient(S_ADDR, 100_000)],
+            );
+            input.height = 1_000_000;
+            input.confirmations = 10; // max_height = 999_990 < note height
+            assert!(plan_outputs(input).is_err());
+        }
+
+        #[test]
+        fn preselected_restricts_to_given_note_ids() {
+            let n = net();
+            let ids = [2u32];
+            let mut input = plan_inputs(
+                &n,
+                pools(vec![
+                    note(1, 2, 1_000_000, 100),
+                    note(2, 2, 1_000_000, 100),
+                ]),
+                vec![recipient(S_ADDR, 100_000)],
+            );
+            input.preselected = Some(&ids);
+            let out = plan_outputs(input).unwrap();
+            // Note 1 was filtered out entirely; only note 2 survives as a candidate.
+            let remaining: Vec<u32> = out.input_pools.iter().flatten().map(|n| n.id).collect();
+            assert_eq!(remaining, vec![2]);
+        }
+
+        // ---- Max amount (send-all) ----
+
+        #[test]
+        fn smart_transparent_sends_full_taddress_balance() {
+            let n = net();
+            // Two t-notes on the same taddress form a single shielding group.
+            let mut input = plan_inputs(
+                &n,
+                pools(vec![note(1, 0, 300_000, 100), note(2, 0, 200_000, 100)]),
+                vec![recipient(S_ADDR, 0)],
+            );
+            input.smart_transparent = true;
+            let out = plan_outputs(input).unwrap();
+            // Everything is swept: the whole 500_000 becomes input, the recipient
+            // absorbs the fee, and no change is left behind.
+            assert_eq!(total_selected(&out), 500_000);
+            assert_eq!(out.recipient_states.len(), 1);
+            assert_eq!(out.recipient_states[0].recipient.amount, 500_000 - out.fee);
+            assert_eq!(out.change, 0);
+            assert_plan_balances(&out);
+        }
+
+        #[test]
+        fn recipient_pays_fee_send_all_leaves_no_change() {
+            let n = net();
+            // Send the entire single-note balance with the recipient paying the fee.
+            let mut input = plan_inputs(
+                &n,
+                pools(vec![note(1, 2, 1_000_000, 100)]),
+                vec![recipient(&ua_orchard(), 1_000_000)],
+            );
+            input.recipient_pays_fee = true;
+            let out = plan_outputs(input).unwrap();
+            assert_eq!(total_selected(&out), 1_000_000);
+            assert_eq!(out.recipient_states[0].recipient.amount, 1_000_000 - out.fee);
+            assert_eq!(out.change, 0);
+            assert_plan_balances(&out);
+        }
+
+        // ---- Memos ----
+
+        #[test]
+        fn encode_memo_prefers_text_then_bytes() {
+            // Text memo wins.
+            let mut r = Recipient::default();
+            r.user_memo = Some("hello".to_string());
+            r.memo_bytes = Some(vec![1, 2, 3]);
+            assert!(encode_memo(&r).unwrap().is_some());
+
+            // Bytes memo used when no text.
+            let mut r = Recipient::default();
+            r.memo_bytes = Some(vec![0xf6]); // canonical empty-memo byte
+            assert!(encode_memo(&r).unwrap().is_some());
+
+            // Nothing set → no memo.
+            assert!(encode_memo(&Recipient::default()).unwrap().is_none());
+        }
+
+        #[test]
+        fn memos_are_routed_to_the_right_recipient() {
+            let n = net();
+            let mut r0 = recipient(S_ADDR, 100_000);
+            r0.user_memo = Some("first".to_string());
+            let mut r1 = recipient(&ua_orchard(), 100_000);
+            r1.user_memo = Some("second".to_string());
+            let input = plan_inputs(&n, pools(vec![note(1, 2, 2_000_000, 100)]), vec![r0, r1]);
+            let out = plan_outputs(input).unwrap();
+            assert_eq!(
+                out.recipient_states[0].recipient.user_memo.as_deref(),
+                Some("first")
+            );
+            assert_eq!(
+                out.recipient_states[1].recipient.user_memo.as_deref(),
+                Some("second")
+            );
+        }
+
+        // ---- Multiple recipients ----
+
+        #[test]
+        fn multi_recipient_across_pools_builds_one_output_each() {
+            let n = net();
+            let input = plan_inputs(
+                &n,
+                pools(vec![note(1, 2, 5_000_000, 100)]),
+                vec![
+                    recipient(S_ADDR, 700_000),        // Sapling output
+                    recipient(&ua_orchard(), 300_000), // Orchard output
+                    recipient(T_ADDR, 200_000),        // transparent output
+                ],
+            );
+            let out = plan_outputs(input).unwrap();
+            assert_eq!(out.recipient_states.len(), 3);
+            assert_eq!(out.recipient_states[0].pool_mask.to_best_pool(), Some(1));
+            assert_eq!(out.recipient_states[1].pool_mask.to_best_pool(), Some(2));
+            assert_eq!(out.recipient_states[2].pool_mask.to_best_pool(), Some(0));
+            assert_plan_balances(&out);
+        }
+
+        #[test]
+        fn recipient_pays_fee_deducts_from_first_recipient_only() {
+            let n = net();
+            let input = {
+                let mut i = plan_inputs(
+                    &n,
+                    pools(vec![note(1, 2, 5_000_000, 100)]),
+                    vec![recipient(S_ADDR, 1_000_000), recipient(&ua_orchard(), 500_000)],
+                );
+                i.recipient_pays_fee = true;
+                i
+            };
+            let out = plan_outputs(input).unwrap();
+            assert_eq!(
+                out.recipient_states[0].recipient.amount,
+                1_000_000 - out.fee,
+                "fee comes out of the first recipient",
+            );
+            assert_eq!(
+                out.recipient_states[1].recipient.amount, 500_000,
+                "later recipients are untouched",
+            );
+            assert_plan_balances(&out);
+        }
+
+        // ---- Failure path ----
+
+        #[test]
+        fn insufficient_funds_returns_no_feasible_selection() {
+            let n = net();
+            let input = plan_inputs(
+                &n,
+                pools(vec![note(1, 2, 50_000, 100)]),
+                vec![recipient(S_ADDR, 10_000_000)],
+            );
+            let err = match plan_outputs(input) {
+                Ok(_) => panic!("expected NoFeasibleSelection"),
+                Err(e) => e,
+            };
+            assert!(is_no_feasible_selection(&err));
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // DB-backed test: the `locked = 0` / unspent filter in
+    // `fetch_unspent_notes_by_pool` — the one place the locked-note guard is
+    // actually exercised. Uses an in-memory SQLite so it stays fast.
+    // ------------------------------------------------------------------
+    mod db {
+        use super::super::fetch_unspent_notes_by_pool;
+        use sqlx::{Connection, SqliteConnection};
+
+        async fn insert_note(
+            conn: &mut SqliteConnection,
+            id: u32,
+            account: u32,
+            pool: u8,
+            value: i64,
+            locked: bool,
+            id_asset: Option<i64>,
+        ) {
+            sqlx::query(
+                "INSERT INTO notes (id_note, height, account, pool, nullifier, tx, value, locked, id_asset)
+                 VALUES (?, 100, ?, ?, ?, 0, ?, ?, ?)",
+            )
+            .bind(id)
+            .bind(account)
+            .bind(pool)
+            .bind(vec![id as u8; 32]) // distinct, non-empty nullifier
+            .bind(value)
+            .bind(locked)
+            .bind(id_asset)
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        }
+
+        #[tokio::test]
+        async fn fetch_excludes_locked_spent_and_other_accounts() {
+            let mut conn = SqliteConnection::connect(":memory:").await.unwrap();
+            crate::db::create_schema(&mut conn).await.unwrap();
+
+            // A ZSA asset so we can check the asset_base COALESCE branch.
+            let asset_base = vec![0xABu8; 32];
+            sqlx::query(
+                "INSERT INTO assets (id_asset, asset_desc_hash, ik, asset_base, first_seen_height)
+                 VALUES (1, X'00', X'00', ?, 1)",
+            )
+            .bind(asset_base.clone())
+            .execute(&mut conn)
+            .await
+            .unwrap();
+
+            insert_note(&mut conn, 1, 1, 1, 100_000, false, None).await; // included (Sapling)
+            insert_note(&mut conn, 2, 1, 2, 100_000, true, None).await; // excluded: locked
+            insert_note(&mut conn, 3, 1, 2, 100_000, false, None).await; // excluded: spent
+            insert_note(&mut conn, 4, 1, 0, 100_000, false, None).await; // included (transparent)
+            insert_note(&mut conn, 5, 2, 1, 100_000, false, None).await; // excluded: other account
+            insert_note(&mut conn, 6, 1, 2, 100_000, false, Some(1)).await; // included, ZSA asset
+
+            // Note 3 has been spent.
+            sqlx::query(
+                "INSERT INTO spends (id_note, height, account, pool, tx, value)
+                 VALUES (3, 101, 1, 2, 0, 100000)",
+            )
+            .execute(&mut conn)
+            .await
+            .unwrap();
+
+            let pools = fetch_unspent_notes_by_pool(&mut conn, 1).await.unwrap();
+
+            let ids: Vec<u32> = pools.iter().flatten().map(|n| n.id).collect();
+            assert_eq!(ids, vec![4, 1, 6], "only unspent, unlocked, own-account notes");
+
+            // Grouped by pool.
+            assert_eq!(pools[0].iter().map(|n| n.id).collect::<Vec<_>>(), vec![4]);
+            assert_eq!(pools[1].iter().map(|n| n.id).collect::<Vec<_>>(), vec![1]);
+            assert_eq!(pools[2].iter().map(|n| n.id).collect::<Vec<_>>(), vec![6]);
+
+            // asset_base COALESCE: no id_asset → 32-zero ZEC sentinel; id_asset → real base.
+            let zec = &pools[1][0];
+            assert_eq!(zec.asset_base, vec![0u8; 32]);
+            let zsa = &pools[2][0];
+            assert_eq!(zsa.asset_base, vec![0xABu8; 32]);
+        }
     }
 }

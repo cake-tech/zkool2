@@ -1,12 +1,11 @@
 use crate::api::coin::Network;
 use crate::api::mempool::{MempoolAmount, MempoolMsg, MempoolNote, MempoolTx};
+use crate::keys::{orchard_scope_to_u8, scope_to_u8};
 use anyhow::{Context as _, Result};
 use itertools::Itertools;
-use orchard::{keys::Scope, note_encryption::OrchardDomain};
-use crate::keys::{orchard_scope_to_u8, scope_to_u8};
+use orchard::{keys::Scope, note_encryption::{IronwoodDomain, OrchardDomain}};
 use sapling_crypto::{
-    keys::PreparedIncomingViewingKey,
-    note_encryption::SaplingDomain,
+    keys::PreparedIncomingViewingKey, note_encryption::SaplingDomain,
     zip32::DiversifiableFullViewingKey,
 };
 use sqlx::SqliteConnection;
@@ -16,14 +15,15 @@ use tokio_util::sync::CancellationToken;
 use zcash_keys::{address::UnifiedAddress, encoding::AddressCodec as _};
 use zcash_note_encryption::try_note_decryption;
 use zcash_primitives::transaction::{
-    components::sapling::zip212_enforcement, Authorized, Transaction, TransactionData,
+    components::sapling::zip212_enforcement, Authorized, OrchardBundle, Transaction,
+    TransactionData,
 };
 use zcash_protocol::memo::Memo;
 use zcash_transparent::address::TransparentAddress;
 
-use crate::{Client, Sink};
 #[cfg(feature = "flutter")]
 use crate::frb_generated::StreamSink;
+use crate::{Client, Sink};
 
 #[cfg(feature = "flutter")]
 pub async fn run_mempool(
@@ -43,53 +43,53 @@ pub async fn run_mempool_impl<S: Sink<MempoolMsg> + Send + 'static>(
     client: &mut Client,
     cancel_token: CancellationToken,
 ) -> Result<()> {
-    let transparent_accounts = sqlx::query(
-        r#"SELECT a.id_account, a.name, ta.address FROM accounts a
-        JOIN transparent_address_accounts ta
-        ON a.id_account = ta.account"#,
-    )
-    .map(|row: SqliteRow| {
-        let account: u32 = row.get(0);
-        let name: String = row.get(1);
-        let address: String = row.get(2);
-        let address = TransparentAddress::decode(network, &address).unwrap();
-        (account, name, address)
-    })
-    .fetch_all(&mut *connection)
-    .await
-    .context("transparent_accounts")?;
-
-    let sapling_accounts = sqlx::query(
-        r#"SELECT account, name, xvk FROM accounts a JOIN sapling_accounts s
-        ON a.id_account = s.account"#,
-    )
-    .map(|row: SqliteRow| {
-        let account: u32 = row.get(0);
-        let name: String = row.get(1);
-        let xvk: Vec<u8> = row.get(2);
-        let fvk = DiversifiableFullViewingKey::from_bytes(&xvk.try_into().unwrap()).unwrap();
-        (account, name, fvk)
-    })
-    .fetch_all(&mut *connection)
-    .await
-    .context("sapling_accounts")?;
-
-    let orchard_accounts = sqlx::query(
-        r#"SELECT account, name, xvk FROM accounts a JOIN orchard_accounts o
-        ON a.id_account = o.account"#,
-    )
-    .map(|row: SqliteRow| {
-        let account: u32 = row.get(0);
-        let name: String = row.get(1);
-        let xvk: Vec<u8> = row.get(2);
-        let fvk = orchard::keys::FullViewingKey::read(&*xvk).unwrap();
-        (account, name, fvk)
-    })
-    .fetch_all(&mut *connection)
-    .await
-    .context("orchard_accounts")?;
-
     'outer: loop {
+        let transparent_accounts = sqlx::query(
+            r#"SELECT a.id_account, a.name, ta.address FROM accounts a
+            JOIN transparent_address_accounts ta
+            ON a.id_account = ta.account"#,
+        )
+        .map(|row: SqliteRow| {
+            let account: u32 = row.get(0);
+            let name: String = row.get(1);
+            let address: String = row.get(2);
+            let address = TransparentAddress::decode(network, &address).unwrap();
+            (account, name, address)
+        })
+        .fetch_all(&mut *connection)
+        .await
+        .context("transparent_accounts")?;
+
+        let sapling_accounts = sqlx::query(
+            r#"SELECT account, name, xvk FROM accounts a JOIN sapling_accounts s
+            ON a.id_account = s.account"#,
+        )
+        .map(|row: SqliteRow| {
+            let account: u32 = row.get(0);
+            let name: String = row.get(1);
+            let xvk: Vec<u8> = row.get(2);
+            let fvk = DiversifiableFullViewingKey::from_bytes(&xvk.try_into().unwrap()).unwrap();
+            (account, name, fvk)
+        })
+        .fetch_all(&mut *connection)
+        .await
+        .context("sapling_accounts")?;
+
+        let orchard_accounts = sqlx::query(
+            r#"SELECT account, name, xvk FROM accounts a JOIN orchard_accounts o
+            ON a.id_account = o.account"#,
+        )
+        .map(|row: SqliteRow| {
+            let account: u32 = row.get(0);
+            let name: String = row.get(1);
+            let xvk: Vec<u8> = row.get(2);
+            let fvk = orchard::keys::FullViewingKey::read(&*xvk).unwrap();
+            (account, name, fvk)
+        })
+        .fetch_all(&mut *connection)
+        .await
+        .context("orchard_accounts")?;
+
         let height = client.latest_height().await?;
         mempool_tx.send(MempoolMsg::BlockHeight(height)).await;
 
@@ -105,7 +105,6 @@ pub async fn run_mempool_impl<S: Sink<MempoolMsg> + Send + 'static>(
                         Some((_, tx, len)) => {
                             let txid = tx.txid();
                             let tx_hash = txid.to_string();
-                            tracing::debug!("MP {tx_hash}");
 
                             let tx_data = tx.into_data();
 
@@ -273,8 +272,9 @@ pub async fn decode_raw_transaction(
     }
 
     macro_rules! process_orchard_bundle {
-        ($bundle:expr, $flavor:ty) => {{
+        ($bundle:expr, $pool:expr, $domain:ident) => {{
             let bundle = $bundle;
+            let pool: u8 = $pool;
             for v in bundle.actions().iter() {
                 let nf = v.nullifier().to_bytes().to_vec();
                 let spent_amount = sqlx::query(
@@ -300,7 +300,7 @@ pub async fn decode_raw_transaction(
                 .await?;
                 notes.extend(spent_amount);
 
-                let domain = OrchardDomain::for_action(v);
+                let domain = $domain::for_action(v);
                 for (account, name, fvk) in okeys.iter() {
                     for scope in [Scope::External, Scope::Internal] {
                         let ivk = fvk.to_ivk(scope);
@@ -320,7 +320,7 @@ pub async fn decode_raw_transaction(
                                 account: *account,
                                 name: name.clone(),
                                 value: note.value().inner() as i64,
-                                pool: 2,
+                                pool,
                                 scope: orchard_scope_to_u8(scope),
                                 diversifier: Some(diversifier),
                                 diversifier_index,
@@ -336,10 +336,17 @@ pub async fn decode_raw_transaction(
     }
 
     if let Some(obundle) = tx_data.orchard_bundle() {
-        process_orchard_bundle!(obundle, OrchardVanilla);
+        match obundle {
+            OrchardBundle::OrchardVanilla(b) => {
+                process_orchard_bundle!(b, 2, OrchardDomain);
+            }
+            OrchardBundle::OrchardZSA(_b) => {
+                // TODO: ZSA mempool processing
+            }
+        }
     }
     if let Some(iwbundle) = tx_data.ironwood_bundle() {
-        process_orchard_bundle!(iwbundle, OrchardVanilla);
+        process_orchard_bundle!(iwbundle, 3, IronwoodDomain);
     }
     Ok(notes)
 }

@@ -1,19 +1,27 @@
 use anyhow::{Context as _, Result};
-use orchard::{keys::Scope, note::ExtractedNoteCommitment, note_encryption::{IronwoodDomain, OrchardDomain}, zsa::OrchardZSADomain};
-use zcash_note_encryption::note_bytes::NoteBytesData;
+use orchard::{
+    keys::Scope,
+    note::ExtractedNoteCommitment,
+    note_encryption::{IronwoodDomain, OrchardDomain},
+    zsa::OrchardZSADomain,
+};
 use sapling_crypto::{keys::PreparedIncomingViewingKey, note_encryption::SaplingDomain};
 use sqlx::{sqlite::SqliteRow, Row, SqliteConnection};
 use tracing::debug;
 use zcash_keys::{address::UnifiedAddress, encoding::AddressCodec};
+use zcash_note_encryption::note_bytes::NoteBytesData;
 use zcash_note_encryption::{try_note_decryption, try_output_recovery_with_ovk};
-use zcash_primitives::transaction::{
-    components::sapling::zip212_enforcement,
-};
+use zcash_primitives::transaction::{components::sapling::zip212_enforcement, OrchardBundle};
 use zcash_protocol::memo::Memo;
 
 use crate::{
-    account::{get_orchard_vk, get_sapling_vk}, api::coin::Network, pay::fee::FeeManager, Client
+    account::{get_orchard_vk, get_sapling_vk},
+    api::coin::Network,
+    pay::fee::FeeManager,
+    Client,
 };
+
+const TX_TYPE_MIGRATION: u8 = 16;
 
 pub async fn fetch_tx_details(
     network: &Network,
@@ -51,7 +59,10 @@ pub async fn fetch_tx_details(
     Ok(())
 }
 
-async fn summarize_tx(connection: &mut SqliteConnection, tx: u32) -> Result<(u8, i64, Option<i32>, i64)> {
+async fn summarize_tx(
+    connection: &mut SqliteConnection,
+    tx: u32,
+) -> Result<(u8, i64, Option<i32>, i64)> {
     let (value, fee) = sqlx::query(
         "WITH n AS (SELECT value, tx FROM notes WHERE id_asset IS NULL
                     UNION ALL
@@ -96,33 +107,57 @@ async fn summarize_tx(connection: &mut SqliteConnection, tx: u32) -> Result<(u8,
         Ok((2, value, asset_id, zsa_value))
     } else {
         // self transfer
-        let has_tspend = sqlx::query("SELECT 1 FROM spends WHERE tx = ? AND pool = 0")
-            .bind(tx)
-            .fetch_optional(&mut *connection)
-            .await?
-            .is_some();
-        let has_tnote = sqlx::query("SELECT 1 FROM notes WHERE tx = ? AND pool = 0")
-            .bind(tx)
-            .fetch_optional(&mut *connection)
-            .await?
-            .is_some();
-        let tpe: u8 = (if has_tspend { 8 } else { 0 }) | (if has_tnote { 4 } else { 0 });
+        let (has_tspend, has_tnote, has_ospend, has_inote) = sqlx::query(
+            "SELECT
+                EXISTS(SELECT 1 FROM spends WHERE tx = ? AND pool = 0),
+                EXISTS(SELECT 1 FROM notes WHERE tx = ? AND pool = 0),
+                EXISTS(SELECT 1 FROM spends WHERE tx = ? AND pool = 2),
+                EXISTS(SELECT 1 FROM notes WHERE tx = ? AND pool = 3)",
+        )
+        .bind(tx)
+        .bind(tx)
+        .bind(tx)
+        .bind(tx)
+        .map(|row: SqliteRow| {
+            (
+                row.get::<bool, _>(0),
+                row.get::<bool, _>(1),
+                row.get::<bool, _>(2),
+                row.get::<bool, _>(3),
+            )
+        })
+        .fetch_one(&mut *connection)
+        .await?;
+        let tpe = self_transfer_type(value, fee, has_tspend, has_tnote, has_ospend, has_inote);
         Ok((tpe, value, asset_id, zsa_value))
+    }
+}
+
+fn self_transfer_type(
+    value: i64,
+    fee: i64,
+    has_tspend: bool,
+    has_tnote: bool,
+    has_ospend: bool,
+    has_inote: bool,
+) -> u8 {
+    if has_ospend && has_inote && value == -fee {
+        TX_TYPE_MIGRATION
+    } else {
+        (if has_tspend { 8 } else { 0 }) | (if has_tnote { 4 } else { 0 })
     }
 }
 
 /// Try ZSA decryption using the raw 612-byte enc_ciphertext with OrchardZSADomain.
 /// Called when vanilla OrchardDomain decryption fails and raw ZSA ciphertext is available.
 fn try_zsa_decrypt(
-    action: &orchard::Action<<orchard::bundle::Authorized as orchard::bundle::Authorization>::SpendAuth>,
+    action: &orchard::Action<
+        <orchard::bundle::Authorized as orchard::bundle::Authorization>::SpendAuth,
+    >,
     raw_enc: &[u8],
     pivk: &orchard::keys::PreparedIncomingViewingKey,
     ovk: &orchard::keys::OutgoingViewingKey,
-) -> Option<(
-    orchard::Note,
-    orchard::Address,
-    [u8; 512],
-)> {
+) -> Option<(orchard::Note, orchard::Address, [u8; 512])> {
     use orchard::note::TransmittedNoteCiphertext;
     use zcash_note_encryption::{try_note_decryption, try_output_recovery_with_ovk};
 
@@ -148,10 +183,11 @@ fn try_zsa_decrypt(
     )
     .ok()?;
 
-    let zsa_domain = OrchardZSADomain { rho: zsa_action.rho() };
+    let zsa_domain = OrchardZSADomain {
+        rho: zsa_action.rho(),
+    };
 
-    if let Some((note, _address, memo_bytes)) =
-        try_note_decryption(&zsa_domain, pivk, &zsa_action)
+    if let Some((note, _address, memo_bytes)) = try_note_decryption(&zsa_domain, pivk, &zsa_action)
     {
         Some((note, _address, memo_bytes))
     } else if let Some((note, address, memo_bytes)) = try_output_recovery_with_ovk(
@@ -315,21 +351,24 @@ pub async fn decrypt_memo(
                     {
                         debug!("decrypt_memo: ivk decrypt ok for vout={vout} pool={pool}");
                         let cmx: ExtractedNoteCommitment = note.commitment().into();
+                        // The note row may be missing (e.g. a tx scanned
+                        // before its note was stored); attach the memo
+                        // without a note link like the sapling path instead
+                        // of failing the whole tx.
                         let id_note =
                             sqlx::query("SELECT id_note FROM notes WHERE account = ? AND cmx = ?")
                                 .bind(account)
                                 .bind(&cmx.to_bytes()[..])
                                 .map(|row: SqliteRow| row.get::<u32, _>(0))
-                                .fetch_one(&mut *connection)
-                                .await
-                                .context("Failed to find note")?;
+                                .fetch_optional(&mut *connection)
+                                .await?;
 
                         process_memo(
                             connection,
                             account,
                             height,
                             id_tx,
-                            Some(id_note),
+                            id_note,
                             None,
                             pool,
                             vout as u32,
@@ -411,10 +450,6 @@ pub async fn decrypt_memo(
                                 )
                                 .await?;
                             }
-                        } else {
-                            debug!(
-                                "decrypt_memo: both ivk and ovk decrypt failed for vout={vout} pool={pool}"
-                            );
                         }
                     } else {
                         debug!(
@@ -427,14 +462,24 @@ pub async fn decrypt_memo(
     }
 
     if let Some(bundle) = tx_data.orchard_bundle() {
-        debug!("decrypt_memo: orchard bundle with {} actions", bundle.actions().len());
-        process_orchard_memo!(bundle, 2, OrchardDomain);
+        match bundle {
+            OrchardBundle::OrchardVanilla(b) => {
+                process_orchard_memo!(b, 2, OrchardDomain);
+            }
+            OrchardBundle::OrchardZSA(_) => {}
+        }
     }
     if let Some(bundle) = tx_data.ironwood_bundle() {
-        debug!("decrypt_memo: ironwood bundle with {} actions", bundle.actions().len());
+        debug!(
+            "decrypt_memo: ironwood bundle with {} actions",
+            bundle.actions().len()
+        );
         process_orchard_memo!(bundle, 3, IronwoodDomain);
     } else {
-        debug!("decrypt_memo: no ironwood bundle in tx {}", hex::encode(txid));
+        debug!(
+            "decrypt_memo: no ironwood bundle in tx {}",
+            hex::encode(txid)
+        );
     }
     let fee = fee_manager.fee();
     sqlx::query("UPDATE transactions SET fee = ? WHERE id_tx = ?")
@@ -540,4 +585,41 @@ async fn store_output(
             .context("Failed to find output")?;
 
     Ok(id_output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn orchard_to_ironwood_fee_only_transfer_is_migration() {
+        assert_eq!(
+            self_transfer_type(-10_000, 10_000, false, false, true, true),
+            TX_TYPE_MIGRATION
+        );
+    }
+
+    #[test]
+    fn migration_requires_exact_fee_value_and_both_pools() {
+        assert_eq!(
+            self_transfer_type(-9_999, 10_000, false, false, true, true),
+            0
+        );
+        assert_eq!(
+            self_transfer_type(-10_000, 10_000, false, false, true, false),
+            0
+        );
+        assert_eq!(
+            self_transfer_type(-10_000, 10_000, false, false, false, true),
+            0
+        );
+    }
+
+    #[test]
+    fn existing_transparent_self_transfer_types_are_preserved() {
+        assert_eq!(
+            self_transfer_type(-10_000, 10_000, true, true, false, false),
+            12
+        );
+    }
 }

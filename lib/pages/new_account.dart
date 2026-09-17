@@ -34,6 +34,13 @@ class NewAccountPageState extends ConsumerState<NewAccountPage> {
   var key = "";
   var isSeed = false;
   var ledger = false;
+  var ledgerApp = 1; // 0 = Zondax (Sapling), 1 = Official (Ironwood)
+
+  int getPools() => ledger
+      ? (ledgerApp == 0
+          ? Pool.transparent.bit | Pool.sapling.bit // T+S
+          : Pool.transparent.bit | Pool.ironwood.bit) // T+I
+      : getKeyPools(key: key, c: c);
   var isFvk = false;
   var _showAdvanced = false;
   Uint8List? iconBytes;
@@ -47,7 +54,7 @@ class NewAccountPageState extends ConsumerState<NewAccountPage> {
     final ib = iconBytes;
     isSeed = isValidPhrase(phrase: key);
     isFvk = isValidFvk(fvk: key, c: c);
-    final keyPools = ledger ? 3 : getKeyPools(key: key, c: c); // 3 is T+S
+    final keyPools = getPools(); // 3 is T+S, 9 is T+Ironwood
 
     return Scaffold(
       appBar: AppBar(
@@ -231,7 +238,19 @@ class NewAccountPageState extends ConsumerState<NewAccountPage> {
                                 ),
                           ),
                           Gap(12),
-                          if (!ledger && (isSeed || key.isEmpty))
+                          if (ledger)
+                            Tooltip(
+                              message: ledgerApp == 1
+                                  ? "Official Ledger accounts always use an internal address for the change"
+                                  : "Zondax Ledger accounts never use an internal address for the change",
+                              child: SwitchListTile(
+                                value: ledgerApp == 1,
+                                onChanged: null,
+                                contentPadding: EdgeInsets.zero,
+                                title: const Text("Use Internal Change"),
+                              ),
+                            )
+                          else if (isSeed || key.isEmpty)
                             Tooltip(
                               message: "Check if you want this account to use an internal address for the change like Zashi (ZIP 316)",
                               child: FormBuilderSwitch(
@@ -299,8 +318,53 @@ class NewAccountPageState extends ConsumerState<NewAccountPage> {
                                 ],
                               ),
                               initialValue: ledger,
-                              onChanged: (v) => setState(() => ledger = v ?? false),
+                              onChanged: (v) {
+                                setState(() {
+                                  ledger = v ?? false;
+                                });
+                                final pools = getPools();
+                                if (pools != 0) {
+                                  formKey.currentState?.fields["pools"]?.didChange(pools);
+                                }
+                              },
                             ),
+                            if (ledger) ...[
+                              Gap(8),
+                              SegmentedButton<int>(
+                                segments: const [
+                                  ButtonSegment(
+                                    value: 1,
+                                    label: Text("Official (Ironwood)"),
+                                  ),
+                                  ButtonSegment(
+                                    value: 0,
+                                    label: Text("Zondax (Sapling)"),
+                                  ),
+                                ],
+                                selected: {ledgerApp},
+                                onSelectionChanged: (s) {
+                                  setState(() {
+                                    ledgerApp = s.first;
+                                  });
+                                  formKey.currentState?.fields["pools"]?.didChange(getPools());
+                                },
+                              ),
+                              if (isSeed && ledgerApp == 1) ...[
+                                Gap(8),
+                                Row(
+                                  children: [
+                                    Icon(Icons.warning_amber_rounded, size: 16, color: Colors.orange),
+                                    Gap(4),
+                                    Expanded(
+                                      child: Text(
+                                        "Official Ledger is discarded: its derivation is identical to a regular account, so this account will be created as a regular seed phrase account",
+                                        style: TextStyle(color: Colors.orange, fontSize: 12),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ],
                           ],
                         ],
                       ],
@@ -332,10 +396,11 @@ class NewAccountPageState extends ConsumerState<NewAccountPage> {
       final String? name = formData?["name"];
       final bool? restore = formData?["restore"];
       final bool ledger = formData?["ledger"] as bool? ?? false;
+      final hw = ledger ? ledgerApp + 1 : 0;
       final String? passphrase = formData?["passphrase"];
       final String? aindex = formData?["aindex"];
       final String? birth = formData?["birth"];
-      final bool? useInternal = formData?["useInternal"];
+      final bool useInternal = ledger ? ledgerApp == 1 : formData?["useInternal"] ?? false;
       final int? pools = formData!["pools"];
 
       final icon = iconBytes;
@@ -354,7 +419,7 @@ class NewAccountPageState extends ConsumerState<NewAccountPage> {
       AwesomeDialog? dialog;
       try {
         String message = "Please wait while we create the account";
-        if (ledger) message += "\nConfirm on your Ledger device";
+        if (ledger && !isSeed) message += "\nConfirm on your Ledger device";
         dialog = showLoadingDialog(context, message);
         final account = await newAccount(
             na: NewAccount(
@@ -367,11 +432,12 @@ class NewAccountPageState extends ConsumerState<NewAccountPage> {
               birth: bh,
               folder: "",
               pools: pools,
-              useInternal: useInternal ?? false,
+              useInternal: useInternal,
               internal: false,
-              ledger: ledger,
+              hw: hw,
             ),
-            c: c);
+            c: c,
+          );
         dialog.dismiss();
         dialog = null;
         final settings = ref.read(appSettingsProvider).requireValue;
@@ -380,7 +446,13 @@ class NewAccountPageState extends ConsumerState<NewAccountPage> {
           if (!settings.offline) await cacheBlockTime(height: bh, c: c);
         } on AnyhowException catch (_) {}
 
+        // Refresh the account list before switching selection, so the provider
+        // graph never sees a selected id that the (stale) list can't resolve.
+        ref.invalidate(getAccountsProvider);
+        await ref.read(getAccountsProvider.future);
+
         await coinContext.setAccount(account: account);
+        ref.read(selectedAccountIdProvider.notifier).set(account);
         c = coinContext.coin;
 
         if ((key.isNotEmpty && await hasTransparentPubKey(c: c)) || ledger) {
@@ -393,13 +465,14 @@ class NewAccountPageState extends ConsumerState<NewAccountPage> {
                 name: name ?? "",
                 seed: seed.mnemonic,
                 aindex: int.parse(aindex ?? "0"),
-                useInternal: useInternal ?? false,
+                useInternal: useInternal,
                 birthHeight: bh,
               );
         }
         if (mounted && key.isEmpty && seed != null) {
           await showSeed(context, seed.mnemonic);
         }
+        ref.invalidate(getAccountsProvider);
         if (mounted && r && currentHeight != null) {
           final shouldSync = await confirmDialog(
             context,
@@ -407,10 +480,10 @@ class NewAccountPageState extends ConsumerState<NewAccountPage> {
             message: "Account imported successfully. Would you like to synchronize it now?",
           );
           if (shouldSync && mounted) {
+            await ref.read(getAccountsProvider.future);
             unawaited(ref.read(synchronizerProvider.notifier).syncIfNeeded(currentHeight, now: true));
           }
         }
-        ref.invalidate(getAccountsProvider);
         if (mounted) GoRouter.of(context).pop();
       } on AnyhowException catch (e) {
         await showException(context, e.message);

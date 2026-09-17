@@ -13,6 +13,7 @@ use crate::{
         store_account_transparent_sk, store_account_transparent_vk, update_dindex,
     },
     key::{is_valid_phrase, is_valid_sapling_key, is_valid_transparent_key, is_valid_ufvk},
+    ledger::HwKind,
     keys::{sapling_dfvk_to_fvk, ScopeExt},
     tiu,
 };
@@ -24,12 +25,12 @@ use crate::{
         key::generate_seed,
     },
     db::{get_account_hw, select_account_transparent, store_account_hw, store_account_metadata},
-    pay::pool::ALL_POOLS,
+    pay::pool::{
+        ALL_POOLS, POOL_IRONWOOD, POOL_ORCHARD, POOL_SAPLING, POOL_TRANSPARENT,
+    },
 };
 use secp256k1::{PublicKey, SecretKey};
-use zcash_keys::keys::{
-    sapling::ExtendedSpendingKey, UnifiedFullViewingKey, UnifiedSpendingKey,
-};
+use zcash_keys::keys::{sapling::ExtendedSpendingKey, UnifiedFullViewingKey, UnifiedSpendingKey};
 use zcash_transparent::address::TransparentAddress;
 
 use anyhow::{anyhow, Context, Result};
@@ -77,28 +78,73 @@ pub async fn new_account(
             .into()
     });
 
+    let ledger_kind = HwKind::from_hw(na.hw);
+    // Official Ledger accounts always use an internal change address, so the
+    // transparent change output can carry the derivation path the Ledger app
+    // requires to verify it as change.
+    let use_internal = if ledger_kind == HwKind::Official {
+        true
+    } else {
+        na.use_internal
+    };
+
     let account = store_account_metadata(
         &mut db_tx,
         &na.name,
         &na.icon,
         &na.fingerprint,
         birth,
-        na.use_internal,
+        use_internal,
         na.internal,
     )
     .await?;
 
     let mut key = na.key.clone();
-    if key.is_empty() && !na.ledger {
+    if key.is_empty() && !ledger_kind.is_ledger() {
         key = generate_seed()?;
     }
 
-    let pools = na.pools.unwrap_or(ALL_POOLS);
+    // The Official Ledger app only ever signs transparent and ironwood
+    // spends, so that is what an account for it tracks unless told otherwise.
+    let pools = na.pools.unwrap_or(if ledger_kind == HwKind::Official {
+        POOL_TRANSPARENT | POOL_IRONWOOD
+    } else {
+        ALL_POOLS
+    });
+    if pools == 0 {
+        anyhow::bail!("an account must support at least one pool");
+    }
 
-    if na.ledger {
+    let ledger_kind = if ledger_kind.is_ledger() {
+        match ledger_kind {
+            HwKind::Official => {
+                if pools & !(POOL_TRANSPARENT | POOL_IRONWOOD) != 0 {
+                    anyhow::bail!(
+                        "Official Ledger accounts support transparent and ironwood pools only"
+                    );
+                }
+                if !key.is_empty() && !is_valid_phrase(&key) && !is_valid_ufvk(network, &key) {
+                    anyhow::bail!(
+                        "Official Ledger accounts accept a seed phrase, a unified viewing key exported by the device, or no key to import the viewing key from the device"
+                    );
+                }
+            }
+            HwKind::Zondax => {
+                if pools & !(POOL_TRANSPARENT | POOL_SAPLING) != 0 {
+                    anyhow::bail!("Zondax Ledger accounts support transparent and sapling pools only");
+                }
+            }
+            _ => anyhow::bail!("unknown Ledger app"),
+        }
+        Some(ledger_kind)
+    } else {
+        None
+    };
+
+    if ledger_kind == Some(HwKind::Zondax) {
         let has_seed = !key.is_empty();
         if !has_seed {
-            store_account_hw(&mut db_tx, account, 1, na.aindex).await?;
+            store_account_hw(&mut db_tx, account, HwKind::Zondax as u8, na.aindex).await?;
         }
 
         let ledger = get_ledger(&mut db_tx, account).await?;
@@ -106,7 +152,7 @@ pub async fn new_account(
         // we must do sapling derivation first to know a valid dindex
         // because in sapling some indices are invalid
         let mut dindex = 0;
-        if pools & 2 != 0 {
+        if pools & POOL_SAPLING != 0 {
             init_account_sapling(network, &mut db_tx, account, birth).await?;
             if has_seed {
                 let sxsk = crate::recover::recover_ledger_seed(&key, na.aindex).await?;
@@ -118,7 +164,7 @@ pub async fn new_account(
                 let address = derive_sapling_address(network, &sxvk, dindex);
                 store_account_sapling_vk(&mut db_tx, account, &sxvk, &address).await?;
             } else {
-                let fvk = ledger.get_hw_fvk(network, na.aindex).await?;
+                let fvk = ledger.import_sapling_fvk(network, na.aindex).await?;
                 let mut dfvk = fvk.to_bytes().to_vec();
                 dfvk.extend_from_slice(&[0u8; 32]); // add a dummy dk because we cannot get the one from the Ledger
                 let xvk = DiversifiableFullViewingKey::from_bytes(&tiu!(dfvk)).unwrap();
@@ -126,14 +172,14 @@ pub async fn new_account(
                 // api but it is currently not working
                 // instead, we "assume" the dindex = 0 is the default sapling address
                 // let (dindex, address) = get_hw_next_diversifier_address(&network, na.aindex, 0).await?;
-                let address = ledger.get_hw_sapling_address(network, na.aindex).await?;
+                let address = ledger.get_sapling_address(network, na.aindex).await?;
                 store_account_sapling_vk(&mut db_tx, account, &xvk, &address).await?;
             }
         }
-        if pools & 1 != 0 && !has_seed {
+        if pools & POOL_TRANSPARENT != 0 && !has_seed {
             init_account_transparent(&mut db_tx, account, birth).await?;
             let (pk, taddr) = ledger
-                .get_hw_transparent_address(network, na.aindex, 0, dindex)
+                .get_transparent_pubkey(network, na.aindex, 0, dindex)
                 .await?;
             store_account_transparent_addr(
                 &mut db_tx,
@@ -146,6 +192,51 @@ pub async fn new_account(
                 false,
             )
             .await?;
+        }
+        update_dindex(&mut db_tx, account, dindex, true).await?;
+    } else if ledger_kind == Some(HwKind::Official) && !is_valid_phrase(&key) {
+        // A watch-only account for the Official Ledger app. The viewing key
+        // either comes straight from the device here, or was exported earlier
+        // by a host that owns the device connection (the mobile wallet, where
+        // the transport is not available from Rust) and is passed as the key.
+        store_account_hw(&mut db_tx, account, HwKind::Official as u8, na.aindex).await?;
+        let ufvk = if key.is_empty() {
+            let ledger = get_ledger(&mut db_tx, account).await?;
+            ledger.get_ufvk(network, na.aindex).await?
+        } else {
+            key.clone()
+        };
+        let uvk = UnifiedFullViewingKey::decode(network, &ufvk)
+            .map_err(|_| anyhow!("Invalid viewing key from the device"))?;
+
+        // no sapling key on the device, so there is no derived default
+        // diversifier index; use 0
+        let dindex: u32 = 0;
+        if pools & POOL_TRANSPARENT != 0 {
+            let tvk = uvk
+                .transparent()
+                .ok_or_else(|| anyhow!("device viewing key has no transparent key"))?;
+            init_account_transparent(&mut db_tx, account, birth).await?;
+            store_account_transparent_vk(&mut db_tx, account, tvk).await?;
+            let (pk, address) = derive_transparent_address(tvk, 0, dindex, false)?;
+            store_account_transparent_addr(
+                &mut db_tx,
+                account,
+                0,
+                dindex,
+                None,
+                &pk,
+                &address.encode(&network),
+                false,
+            )
+            .await?;
+        }
+        if pools & (POOL_ORCHARD | POOL_IRONWOOD) != 0 {
+            let ovk = uvk
+                .orchard()
+                .ok_or_else(|| anyhow!("device viewing key has no orchard key"))?;
+            init_account_orchard(network, &mut db_tx, account, birth).await?;
+            store_account_orchard_vk(&mut db_tx, account, ovk).await?;
         }
         update_dindex(&mut db_tx, account, dindex, true).await?;
     } else if is_valid_phrase(&key) {
@@ -173,7 +264,7 @@ pub async fn new_account(
         let (_, di) = uvk.default_address(UnifiedAddressRequest::AllAvailableKeys)?;
         let dindex: u32 = di.try_into()?;
 
-        if pools & 1 != 0 {
+        if pools & POOL_TRANSPARENT != 0 {
             init_account_transparent(&mut db_tx, account, birth).await?;
             let tsk = usk.transparent();
             store_account_transparent_sk(&mut db_tx, account, tsk).await?;
@@ -221,7 +312,7 @@ pub async fn new_account(
             }
         }
 
-        if pools & 2 != 0 {
+        if pools & POOL_SAPLING != 0 {
             init_account_sapling(network, &mut db_tx, account, birth).await?;
             let sxsk = usk.sapling();
             store_account_sapling_sk(&mut db_tx, account, sxsk).await?;
@@ -230,7 +321,7 @@ pub async fn new_account(
             store_account_sapling_vk(&mut db_tx, account, &sxvk, &address).await?;
         }
 
-        if pools & 4 != 0 {
+        if pools & (POOL_ORCHARD | POOL_IRONWOOD) != 0 {
             init_account_orchard(network, &mut db_tx, account, birth).await?;
             let oxsk = usk.orchard();
             store_account_orchard_sk(&mut db_tx, account, oxsk).await?;
@@ -365,7 +456,7 @@ pub async fn new_account(
         let dindex: u32 = di.try_into()?;
 
         match uvk.transparent() {
-            Some(tvk) if pools & 1 != 0 => {
+            Some(tvk) if pools & POOL_TRANSPARENT != 0 => {
                 init_account_transparent(&mut db_tx, account, birth).await?;
                 store_account_transparent_vk(&mut db_tx, account, tvk).await?;
                 let (pk, address) = derive_transparent_address(tvk, 0, dindex, false)?;
@@ -384,7 +475,7 @@ pub async fn new_account(
             _ => {}
         }
         match uvk.sapling() {
-            Some(sxvk) if pools & 2 != 0 => {
+            Some(sxvk) if pools & POOL_SAPLING != 0 => {
                 init_account_sapling(network, &mut db_tx, account, birth).await?;
                 let address = ua.sapling().unwrap();
                 let address = address.encode(&network);
@@ -393,17 +484,28 @@ pub async fn new_account(
             _ => {}
         }
         match uvk.orchard() {
-            Some(ovk) if pools & 4 != 0 => {
+            Some(ovk) if pools & POOL_ORCHARD != 0 => {
                 init_account_orchard(network, &mut db_tx, account, birth).await?;
                 store_account_orchard_vk(&mut db_tx, account, ovk).await?;
             }
             _ => {}
         }
         update_dindex(&mut db_tx, account, dindex, true).await?;
-    }
-    else {
+    } else {
         anyhow::bail!("Unsupported key");
     }
+
+    let external_indexes: Vec<u32> = sqlx::query(
+        "SELECT dindex FROM transparent_address_accounts WHERE account = ? AND scope = 0",
+    )
+    .bind(account)
+    .map(|row: SqliteRow| row.get(0))
+    .fetch_all(&mut *db_tx)
+    .await?;
+    for di in external_indexes {
+        ensure_internal_change_address(network, &mut *db_tx, account, di).await?;
+    }
+
     db_tx.commit().await?;
     Ok(account)
 }
@@ -598,11 +700,12 @@ pub async fn get_orchard_vk(
 pub async fn get_orchard_note(
     connection: &mut SqliteConnection,
     id: u32,
-    height: u32,
+    witness_height: u32,
     ovk: &orchard::keys::FullViewingKey,
     eo: &FragmentAuthPath,
     ero: &AuthPath,
     note_version: NoteVersion,
+    rewind_to_position: Option<u32>,
 ) -> Result<(orchard::Note, orchard::tree::MerklePath)> {
     let (scope, position, diversifier, value, rcm, rho, witness, asset_base) = sqlx::query(
         "SELECT scope, position, diversifier, value, rcm, rho, witness,
@@ -613,7 +716,7 @@ pub async fn get_orchard_note(
          WHERE id_note = ? AND w.height = ?",
     )
     .bind(id)
-    .bind(height)
+    .bind(witness_height)
     .map(|row: SqliteRow| {
         let scope: Option<u8> = row.get(0);
         let position: u32 = row.get(1);
@@ -632,6 +735,17 @@ pub async fn get_orchard_note(
     let scope = scope.unwrap_or(0);
     let scope = scope.orchard_scope();
     let (witness, _) = bincode::decode_from_slice::<Witness, _>(&witness, legacy()).unwrap();
+    let witness = match rewind_to_position {
+        Some(position) => {
+            anyhow::ensure!(
+                witness.position <= position,
+                "Note position {} is after anchor edge position {position}",
+                witness.position,
+            );
+            witness.rewind(position)
+        }
+        None => witness,
+    };
     let rho = Rho::from_bytes(&rho.try_into().unwrap()).unwrap();
 
     let diversifer = orchard::keys::Diversifier::from_bytes(diversifier.try_into().unwrap());
@@ -692,25 +806,31 @@ pub async fn get_account_full_address(
     .await?;
 
     let saddress = sqlx::query(
-        "SELECT sa.xvk, sa.address FROM sapling_accounts sa
+        "SELECT sa.xvk, sa.address, a.dindex FROM sapling_accounts sa
         JOIN accounts a ON sa.account = a.id_account AND sa.account = ?",
     )
     .bind(account)
-    .map(|row: SqliteRow| {
+    .map(|row: SqliteRow| -> Result<PaymentAddress, anyhow::Error> {
         let xvk: Vec<u8> = row.get(0);
         let address: String = row.get(1);
-        let fvk = DiversifiableFullViewingKey::from_bytes(&xvk.try_into().unwrap()).unwrap();
+        let _dindex: u32 = row.get(2);
+        let fvk = DiversifiableFullViewingKey::from_bytes(&xvk.try_into().map_err(|_| {
+            anyhow!("invalid sapling xvk length for account {account}")
+        })?)
+        .ok_or_else(|| anyhow!("invalid sapling xvk for account {account}"))?;
         if scope == 1 && hw == 0 {
             // we do not need to derive a diversified change address
             // since they are not exposed to the user
             let (_, pa) = fvk.change_address();
-            pa
+            Ok(pa)
         } else {
-            PaymentAddress::decode(network, &address).unwrap()
+            PaymentAddress::decode(network, &address)
+                .map_err(|e| anyhow!("invalid stored sapling address for account {account}: {e}"))
         }
     })
     .fetch_optional(&mut *connection)
-    .await?;
+    .await?
+    .transpose()?;
 
     let oaddress = sqlx::query(
         "SELECT a.dindex, oa.xvk FROM orchard_accounts oa
@@ -780,7 +900,7 @@ pub async fn generate_next_dindex(
         dindex += 1;
         let address = if hw != 0 {
             let (di, address) = ledger
-                .get_hw_next_diversifier_address(network, aindex, dindex)
+                .next_diversifier_address(network, aindex, dindex)
                 .await?;
             dindex = di;
             address
@@ -817,7 +937,7 @@ pub async fn generate_next_dindex(
         }
         None if hw != 0 => {
             let (pk, address) = ledger
-                .get_hw_transparent_address(network, aindex, 0, dindex)
+                .get_transparent_pubkey(network, aindex, 0, dindex)
                 .await?;
             (None, pk, Some(address))
         }
@@ -836,6 +956,7 @@ pub async fn generate_next_dindex(
             false,
         )
         .await?;
+        ensure_internal_change_address(network, &mut db_tx, account, dindex).await?;
     }
     db_tx.commit().await?;
 
@@ -909,6 +1030,150 @@ async fn get_transparent_keys(
     Ok((xsk, xvk))
 }
 
+/// The stored transparent address that receives a transaction's transparent
+/// change: the account's change-scope address at the current dindex. Pairs are
+/// materialized together when addresses are derived, so a missing row is a
+/// pairing-invariant violation and is surfaced as an error rather than derived.
+pub async fn transparent_change_address(
+    connection: &mut SqliteConnection,
+    account: u32,
+    use_internal: bool,
+    dindex: u32,
+) -> Result<String> {
+    let scope: u32 = if use_internal { 1 } else { 0 };
+    let kind = if use_internal { "change" } else { "external" };
+    let address: Option<String> = sqlx::query(
+        "SELECT address FROM transparent_address_accounts
+        WHERE account = ?1 AND scope = ?2 AND dindex = ?3",
+    )
+    .bind(account)
+    .bind(scope)
+    .bind(dindex)
+    .map(|row: SqliteRow| row.get(0))
+    .fetch_optional(&mut *connection)
+    .await?;
+    address.ok_or_else(|| {
+        anyhow!(
+            "no stored {kind} transparent address at dindex {dindex} for account {account}; \
+             generate a new address set or resync to materialize the change-address pair"
+        )
+    })
+}
+
+/// Derive and store the transparent address at (scope, dindex) when missing.
+async fn derive_and_store_transparent(
+    network: &Network,
+    connection: &mut SqliteConnection,
+    account: u32,
+    scope: u32,
+    dindex: u32,
+) -> Result<bool> {
+    let exists: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM transparent_address_accounts
+        WHERE account = ?1 AND scope = ?2 AND dindex = ?3",
+    )
+    .bind(account)
+    .bind(scope)
+    .bind(dindex)
+    .fetch_one(&mut *connection)
+    .await?;
+    if exists.0 > 0 {
+        return Ok(false);
+    }
+
+    let hw = get_account_hw(connection, account).await?;
+    let (xsk, xvk) = get_transparent_keys(connection, account).await?;
+    let (sk, pk, address) = match xvk {
+        Some(xvk) => {
+            let sk = match xsk.as_ref() {
+                Some(xsk) => Some(derive_transparent_sk(xsk, scope, dindex)?),
+                None => None,
+            };
+            let (pk, address) = derive_transparent_address(&xvk, scope, dindex, false)?;
+            (sk, pk, address)
+        }
+        None if hw != 0 => {
+            let (aindex,): (u32,) =
+                sqlx::query_as("SELECT aindex FROM accounts WHERE id_account = ?")
+                    .bind(account)
+                    .fetch_one(&mut *connection)
+                    .await?;
+            let ledger = get_ledger(connection, account).await?;
+            let (pk, address) = ledger
+                .get_transparent_pubkey(network, aindex, scope, dindex)
+                .await?;
+            (None, pk, address)
+        }
+        _ => {
+            anyhow::bail!(
+                "cannot derive transparent address scope {scope} at dindex {dindex} \
+                 for account {account}: no account key"
+            )
+        }
+    };
+    let encoded = address.encode(network);
+    store_account_transparent_addr(connection, account, scope, dindex, sk, &pk, &encoded, false)
+        .await
+}
+
+/// Ensure the internal (scope 1) change counterpart of external index `dindex`
+/// exists for accounts that use internal change. Returns whether a new row was
+/// inserted.
+pub async fn ensure_internal_change_address(
+    network: &Network,
+    connection: &mut SqliteConnection,
+    account: u32,
+    dindex: u32,
+) -> Result<bool> {
+    let (use_internal,): (bool,) =
+        sqlx::query_as("SELECT use_internal FROM accounts WHERE id_account = ?")
+            .bind(account)
+            .fetch_one(&mut *connection)
+            .await?;
+    if !use_internal {
+        return Ok(false);
+    }
+    derive_and_store_transparent(network, connection, account, 1, dindex).await
+}
+
+/// Materialize the internal (change) counterpart of every stored external
+/// transparent address for accounts that use internal change. Idempotent; run
+/// at database open to reconcile databases that predate change-address pairing.
+pub async fn backfill_transparent_change_addresses(
+    network: &Network,
+    connection: &mut SqliteConnection,
+) -> Result<usize> {
+    let mut added = 0;
+    let accounts: Vec<u32> = sqlx::query(
+        "SELECT a.id_account FROM accounts a
+        WHERE a.use_internal = 1 AND EXISTS (
+            SELECT 1 FROM transparent_address_accounts ta
+            WHERE ta.account = a.id_account AND ta.scope = 0)",
+    )
+    .map(|row: SqliteRow| row.get(0))
+    .fetch_all(&mut *connection)
+    .await?;
+    for account in accounts {
+        let (xsk, xvk) = get_transparent_keys(connection, account).await?;
+        if xvk.is_none() && xsk.is_none() {
+            continue;
+        }
+        let indexes: Vec<u32> = sqlx::query(
+            "SELECT dindex FROM transparent_address_accounts WHERE account = ? AND scope = 0",
+        )
+        .bind(account)
+        .map(|row: SqliteRow| row.get(0))
+        .fetch_all(&mut *connection)
+        .await?;
+        for dindex in indexes {
+            if derive_and_store_transparent(network, connection, account, 1, dindex).await? {
+                added += 1;
+            }
+        }
+    }
+    Ok(added)
+}
+
 pub async fn get_addresses(
     network: &Network,
     connection: &mut SqliteConnection,
@@ -937,9 +1202,9 @@ pub async fn get_addresses(
     let ua_orchard = UnifiedAddress::from_receivers(oaddr, None, None);
 
     let ua = UnifiedAddress::from_receivers(
-        if ua_pools & 4 != 0 { oaddr } else { None },
-        if ua_pools & 2 != 0 { saddr } else { None },
-        if ua_pools & 1 != 0 { taddr } else { None },
+        if ua_pools & POOL_ORCHARD != 0 { oaddr } else { None },
+        if ua_pools & POOL_SAPLING != 0 { saddr } else { None },
+        if ua_pools & POOL_TRANSPARENT != 0 { taddr } else { None },
     );
 
     // final fallback if we have a transparent address from a BIP 38 secret key
@@ -1018,10 +1283,7 @@ pub async fn init_sync_heights(
     account: u32,
     birth_height: u32,
 ) -> Result<()> {
-    let max_pool = if network
-        .activation_height(NetworkUpgrade::Nu6_3)
-        .is_some()
-    {
+    let max_pool = if network.activation_height(NetworkUpgrade::Nu6_3).is_some() {
         4
     } else {
         3
@@ -1053,15 +1315,17 @@ pub async fn init_sync_heights(
     Ok(())
 }
 
-pub(crate) fn asset_display(id_asset: Option<i32>, asset_name: Option<String>, asset_desc_hash: Option<Vec<u8>>) -> String {
+pub(crate) fn asset_display(
+    id_asset: Option<i32>,
+    asset_name: Option<String>,
+    asset_desc_hash: Option<Vec<u8>>,
+) -> String {
     match id_asset {
-        Some(_) => asset_name
-            .filter(|n| !n.is_empty())
-            .unwrap_or_else(|| {
-                asset_desc_hash
-                    .map(|h| hex::encode(&h[..8.min(h.len())]))
-                    .unwrap_or_else(|| "ZSA".to_string())
-            }),
+        Some(_) => asset_name.filter(|n| !n.is_empty()).unwrap_or_else(|| {
+            asset_desc_hash
+                .map(|h| hex::encode(&h[..8.min(h.len())]))
+                .unwrap_or_else(|| "ZSA".to_string())
+        }),
         None => "ZEC".to_string(),
     }
 }
@@ -1427,7 +1691,7 @@ pub async fn has_pool(connection: &mut SqliteConnection, account: u32, pool: u8)
     Ok(has_pool)
 }
 
-fn derive_sapling_address(
+pub(crate) fn derive_sapling_address(
     network: &Network,
     sxvk: &DiversifiableFullViewingKey,
     dindex: u32,

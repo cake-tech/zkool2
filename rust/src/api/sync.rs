@@ -39,8 +39,6 @@ pub async fn synchronize(
     .await
 }
 
-
-
 #[cfg_attr(feature = "flutter", frb)]
 pub async fn balance(c: &Coin) -> Result<PoolBalance> {
     let mut connection = c.get_connection().await?;
@@ -70,6 +68,14 @@ pub async fn get_db_height(c: &Coin) -> Result<SyncHeight> {
     crate::sync::get_db_height(&mut *connection, c.account).await
 }
 
+/// Decrypt memos and store transaction details for `account`.
+///
+/// Deliberately does NOT take SYNCING. It did briefly, to stop it colliding
+/// with `do_dkg` — but holding the lock here let it starve the next sync, and
+/// `synchronize_impl` reports a skipped sync as success, so the DKG went on to
+/// build a transaction from stale notes and double-spent. Detail fetching is
+/// best effort and its `database is locked` failures are self-healing; a
+/// starved sync is not.
 #[cfg_attr(feature = "flutter", frb)]
 pub async fn fetch_tx_details(account: u32, c: &Coin) -> Result<()> {
     let mut connection = c.get_connection().await?;

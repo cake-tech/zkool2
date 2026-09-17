@@ -4,12 +4,14 @@ use zcash_primitives::transaction::Transaction;
 
 use tonic::async_trait;
 
-use crate::{
-    api::coin::Network,
-    lwd::*,
-};
+use crate::{api::coin::Network, lwd::*};
 
 pub mod lwd;
+#[cfg(feature = "nym")]
+pub mod nym;
+#[cfg(feature = "nym")]
+pub mod nym_service;
+pub mod votechain;
 pub mod zebra;
 
 #[async_trait]

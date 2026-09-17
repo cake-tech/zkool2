@@ -60,8 +60,14 @@ async fn main() -> Result<()> {
     rustls::crypto::ring::default_provider()
         .install_default()
         .unwrap();
+    // Without an EnvFilter the subscriber is pinned at INFO and RUST_LOG is
+    // silently ignored, so no debug! output from the sync path is ever visible.
     let subscriber = tracing_subscriber::fmt()
         .with_ansi(false)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
         .compact()
         .finish();
     let c = Config::parse();
@@ -84,10 +90,16 @@ async fn main() -> Result<()> {
     } = config;
 
     if let Some(hex) = decode_tx {
+        use zcash_primitives::transaction::OrchardBundle;
         use zcash_primitives::transaction::Transaction;
         use zcash_protocol::consensus::BranchId;
         let bytes = hex::decode(hex.trim())?;
-        for branch in [BranchId::Nu6_3, BranchId::Nu6_2, BranchId::Nu6, BranchId::Nu5] {
+        for branch in [
+            BranchId::Nu6_3,
+            BranchId::Nu6_2,
+            BranchId::Nu6,
+            BranchId::Nu5,
+        ] {
             if let Ok(tx) = Transaction::read(&mut &bytes[..], branch) {
                 let txid = tx.txid();
                 eprintln!("TXID: {}", hex::encode(txid.as_ref()));
@@ -96,8 +108,16 @@ async fn main() -> Result<()> {
                 eprintln!("Consensus branch: {:?}", tx.consensus_branch_id());
                 eprintln!("Transparent: {}", tx.transparent_bundle().is_some());
                 eprintln!("Sapling: {}", tx.sapling_bundle().is_some());
-                let oa = tx.orchard_bundle().map(|b| b.actions().iter().count()).unwrap_or(0);
-                let iw = tx.ironwood_bundle().map(|b| (b.actions().iter().count(), b.flags().clone()));
+                let oa = tx
+                    .orchard_bundle()
+                    .map(|b| match b {
+                        OrchardBundle::OrchardVanilla(b) => b.actions().len(),
+                        OrchardBundle::OrchardZSA(b) => b.actions().len(),
+                    })
+                    .unwrap_or(0);
+                let iw = tx
+                    .ironwood_bundle()
+                    .map(|b| (b.actions().iter().count(), b.flags().clone()));
                 eprintln!("Orchard actions: {oa}");
                 if let Some((count, flags)) = iw {
                     eprintln!("Ironwood actions: {count}, flags: {flags:?}");
@@ -192,7 +212,9 @@ async fn main() -> Result<()> {
                 let base_ctx = context.clone();
                 let decoding_key = Arc::clone(&decoding_key);
                 async move {
-                    let auth_token = variables.get("authToken").and_then(|v| v.convert::<String>().ok());
+                    let auth_token = variables
+                        .get("authToken")
+                        .and_then(|v| v.convert::<String>().ok());
 
                     let ctx = match (&*decoding_key, auth_token) {
                         (Some(key), Some(token)) => Context {

@@ -38,12 +38,15 @@ async def wait_for_blocks(client, start_height: int, num_blocks: int):
         await asyncio.sleep(1)
 
 
-async def mine_blocks(rpc_url: str, num_blocks: int):
+async def mine_blocks(rpc_url: str, num_blocks: int, timeout: float = 300.0):
     """Mine blocks using the RPC endpoint.
 
     Args:
         rpc_url: RPC endpoint URL
         num_blocks: Number of blocks to mine
+        timeout: Request timeout in seconds. The default httpx timeout of 5s
+            is only enough for a handful of blocks; generating a hundred to
+            cross an activation height takes considerably longer.
 
     Returns:
         RPC response
@@ -54,7 +57,7 @@ async def mine_blocks(rpc_url: str, num_blocks: int):
         "method": "generate",
         "params": [num_blocks],
     }
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.post(rpc_url, json=payload)
         response.raise_for_status()
         return response.json()
@@ -73,9 +76,7 @@ async def gql_client(url: str, timeout: float = 300.0):
     """
     http_timeout = httpx.Timeout(timeout, connect=60.0)
     transport = HTTPXAsyncTransport(url=url, timeout=http_timeout)
-    client = Client(
-        transport=transport, fetch_schema_from_transport=False, execute_timeout=timeout
-    )
+    client = Client(transport=transport, fetch_schema_from_transport=False, execute_timeout=timeout)
     try:
         yield client
     finally:
@@ -95,6 +96,7 @@ async def start_zkool_instance(
     lwd_url: str,
     log_path: str | None = None,
     zebra: bool = False,
+    coin: int | None = None,
 ) -> subprocess.Popen:
     """Start a zkool_graphql instance.
 
@@ -105,6 +107,9 @@ async def start_zkool_instance(
         lwd_url: Light wallet daemon URL (or zebra RPC URL when zebra=True)
         log_path: Optional path for log file
         zebra: If True, use zebra JSON-RPC backend instead of lightwalletd gRPC
+        coin: 0=mainnet, 1=testnet, 2=regtest, 3=ZSA regtest. When omitted the
+            server infers the network from the database filename, so pass it
+            explicitly rather than relying on db_path containing "regtest".
 
     Returns:
         Subprocess object
@@ -123,6 +128,8 @@ async def start_zkool_instance(
     cmd = [zkool_binary, "-d", db_path, "-p", str(port), "-l", lwd_url]
     if zebra:
         cmd.append("--zebra")
+    if coin is not None:
+        cmd += ["-C", str(coin)]
 
     process = subprocess.Popen(
         cmd,
@@ -152,9 +159,9 @@ def dump_server_log(log_path: str, label: str = "SERVER LOG") -> str:
     except OSError:
         return ""
     if content:
-        print(f"\n{'='*60}\n{label} ({log_path})\n{'='*60}")
+        print(f"\n{'=' * 60}\n{label} ({log_path})\n{'=' * 60}")
         print(content)
-        print(f"{'='*60}\n")
+        print(f"{'=' * 60}\n")
     return content
 
 
@@ -340,6 +347,8 @@ async def pay(client, account_id: int, recipients: list[dict]) -> str:
         Transaction ID
     """
     result = await client.execute_async(
-        GraphQLRequest(PAY_MUTATION, variable_values={"account": account_id, "recipients": recipients})
+        GraphQLRequest(
+            PAY_MUTATION, variable_values={"account": account_id, "recipients": recipients}
+        )
     )
     return result["pay"]

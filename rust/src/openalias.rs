@@ -57,7 +57,9 @@ fn split_oa1_pairs(body: &str) -> Vec<&str> {
         match b {
             b'"' => in_quotes = !in_quotes,
             b';' if !in_quotes => {
-                let pair = body[start..i].trim();
+                // Trim leading only: a trailing space before `;` may be the
+                // second char of a `\ ` escape and belongs to the value.
+                let pair = body[start..i].trim_start();
                 if !pair.is_empty() {
                     pairs.push(pair);
                 }
@@ -66,7 +68,7 @@ fn split_oa1_pairs(body: &str) -> Vec<&str> {
             _ => {}
         }
     }
-    let last = body[start..].trim();
+    let last = body[start..].trim_start();
     if !last.is_empty() {
         pairs.push(last);
     }
@@ -81,14 +83,32 @@ fn parse_oa1_pair(pair: &str) -> Option<(String, String)> {
     let (key, val) = pair.split_once('=')?;
     let key = key.trim().to_string();
 
-    let val = val.trim();
-    let val = if val.starts_with('"') && val.ends_with('"') && val.len() >= 2 {
-        val[1..val.len() - 1].to_string()
+    let trimmed = val.trim();
+    let val = if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
+        // Quoted value: strip quotes, decode escaped spaces inside.
+        trimmed[1..trimmed.len() - 1].replace("\\ ", " ")
     } else {
-        val.replace("\\ ", " ")
+        // Unquoted value: decode `\ ` escapes on the raw value.
+        unescape_oa1_value(val)
     };
 
     Some((key, val))
+}
+
+/// Decode `\ ` escapes in an unquoted OA1 value.
+///
+/// Mirrors the openalias-rs grammar (`"\\ "* ... "\\ "*`): unescaped
+/// leading/trailing spaces are dropped, but spaces encoded by a trailing
+/// `\ ` run survive (e.g. `foo\ ` → `foo `).
+fn unescape_oa1_value(raw: &str) -> String {
+    let raw = raw.trim_start();
+    let mut tail = String::new();
+    let mut end = raw.len();
+    while raw[..end].ends_with("\\ ") {
+        end -= 2;
+        tail.push(' ');
+    }
+    format!("{}{}", raw[..end].trim_end().replace("\\ ", " "), tail)
 }
 
 /// Parse an OA1 TXT record string into an [`Oa1Record`].
@@ -170,9 +190,7 @@ fn build_dns_resolver(secure: bool) -> TokioAsyncResolver {
 
     match hickory_resolver::system_conf::read_system_conf() {
         Ok((config, _)) => {
-            info!(
-                "DNS resolver created from system config (DNSSEC: {secure})"
-            );
+            info!("DNS resolver created from system config (DNSSEC: {secure})");
             TokioAsyncResolver::tokio(config, opts)
         }
         Err(e) => {
@@ -202,10 +220,9 @@ fn resolver_secure() -> &'static TokioAsyncResolver {
 /// records (as opposed to having broken/unverifiable DNSSEC records).
 fn is_unsigned_error(err: &ResolveError) -> bool {
     match err.kind() {
-        ResolveErrorKind::Proto(proto_err) => matches!(
-            proto_err.kind(),
-            ProtoErrorKind::RrsigsNotPresent { .. }
-        ),
+        ResolveErrorKind::Proto(proto_err) => {
+            matches!(proto_err.kind(), ProtoErrorKind::RrsigsNotPresent { .. })
+        }
         _ => false,
     }
 }
@@ -250,8 +267,7 @@ async fn lookup_txt_with_dnssec(
 /// Perform async DNS TXT lookup and parse OA1 records into [`Oa1Record`]s.
 /// Returns the parsed records along with the DNSSEC validation status.
 async fn lookup_oa1_records(alias: &str) -> Result<(Vec<Oa1Record>, DnssecStatus)> {
-    let fqdn =
-        alias_to_fqdn(alias).ok_or_else(|| anyhow!("Invalid OpenAlias name: {alias}"))?;
+    let fqdn = alias_to_fqdn(alias).ok_or_else(|| anyhow!("Invalid OpenAlias name: {alias}"))?;
     info!("Resolving OpenAlias: {alias} → {fqdn}");
 
     let (response, status) = lookup_txt_with_dnssec(&fqdn, alias).await?;
@@ -271,9 +287,7 @@ async fn lookup_oa1_records(alias: &str) -> Result<(Vec<Oa1Record>, DnssecStatus
     for r in &records {
         match parse_oa1(r) {
             Some(addr) => addrs.push(addr),
-            None => info!(
-                "OpenAlias failed to parse OA1 record for {alias}: {r}"
-            ),
+            None => info!("OpenAlias failed to parse OA1 record for {alias}: {r}"),
         }
     }
     info!("OpenAlias parsed {} address(es) for {alias}", addrs.len());
@@ -325,8 +339,8 @@ pub async fn resolve_zcash(alias: &str) -> Result<(Vec<Recipient>, DnssecStatus)
 /// `convert_if_network` for the network check. Returns `Ok(())` if the
 /// address is valid for the given network, or an error with details.
 pub fn try_validate_zcash_address(address: &str, net: NetworkType) -> Result<()> {
-    let addr =
-        ZcashAddress::try_from_encoded(address).map_err(|e| anyhow!("Invalid Zcash address: {e}"))?;
+    let addr = ZcashAddress::try_from_encoded(address)
+        .map_err(|e| anyhow!("Invalid Zcash address: {e}"))?;
 
     match addr.convert_if_network::<NetCheck>(net) {
         Err(ConversionError::IncorrectNetwork { expected, actual }) => Err(anyhow!(
@@ -373,8 +387,7 @@ pub async fn resolve_zcash_for_network(
 /// Get the raw OpenAlias TXT record strings for an alias (without parsing),
 /// along with the DNSSEC validation status.
 pub async fn resolve_raw(alias: &str) -> Result<(Vec<String>, DnssecStatus)> {
-    let fqdn =
-        alias_to_fqdn(alias).ok_or_else(|| anyhow!("Invalid OpenAlias name: {alias}"))?;
+    let fqdn = alias_to_fqdn(alias).ok_or_else(|| anyhow!("Invalid OpenAlias name: {alias}"))?;
 
     let (response, status) = lookup_txt_with_dnssec(&fqdn, alias).await?;
 
@@ -417,8 +430,14 @@ mod tests {
 
     #[test]
     fn test_validate_zcash_address_garbage() {
-        assert!(!validate_zcash_address("not-a-zcash-address", NetworkType::Main));
-        assert!(!validate_zcash_address("not-a-zcash-address", NetworkType::Test));
+        assert!(!validate_zcash_address(
+            "not-a-zcash-address",
+            NetworkType::Main
+        ));
+        assert!(!validate_zcash_address(
+            "not-a-zcash-address",
+            NetworkType::Test
+        ));
         assert!(!validate_zcash_address(
             "not-a-zcash-address",
             NetworkType::Regtest
@@ -436,8 +455,7 @@ mod tests {
 
     #[test]
     fn test_parse_oa1_with_quoted_semicolon() {
-        let record =
-            "oa1:btc recipient_address=1addr; recipient_name=\"nabijaczleweli; FOSS\";";
+        let record = "oa1:btc recipient_address=1addr; recipient_name=\"nabijaczleweli; FOSS\";";
         let parsed = parse_oa1(record).unwrap();
         assert_eq!(parsed.cryptocurrency, "btc");
         assert_eq!(parsed.address, "1addr");
@@ -456,7 +474,10 @@ mod tests {
         let parsed = parse_oa1(record).unwrap();
         assert_eq!(parsed.cryptocurrency, "btc");
         assert_eq!(parsed.address, "1MoSyGZp3SKpoiXPXfZDFK7cDUFCVtEDeS");
-        assert_eq!(parsed.tx_description, Some("Donation for nabijaczleweli: ".to_string()));
+        assert_eq!(
+            parsed.tx_description,
+            Some("Donation for nabijaczleweli: ".to_string())
+        );
     }
 
     #[test]

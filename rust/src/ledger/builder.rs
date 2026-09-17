@@ -1,12 +1,11 @@
 use std::io::Write;
 
-use anyhow::Result;
 use byteorder::{WriteBytesExt, LE};
 use jubjub::Fr;
 use pczt::{
     roles::{
-        io_finalizer::IoFinalizer, prover::Prover,
-        spend_finalizer::SpendFinalizer, updater::Updater,
+        io_finalizer::IoFinalizer, prover::Prover, spend_finalizer::SpendFinalizer,
+        updater::Updater,
     },
     Pczt,
 };
@@ -24,15 +23,17 @@ use secp256k1::PublicKey;
 use sqlx::{pool::PoolConnection, Sqlite, SqliteConnection};
 use tracing::info;
 use zcash_keys::encoding::AddressCodec;
-use zcash_note_encryption::{try_output_recovery_with_ovk, Domain, EphemeralKeyBytes, OutgoingCipherKey};
-use zcash_script::script::Evaluable;
-use zcash_transparent::address::TransparentAddress;
+use zcash_note_encryption::{
+    try_output_recovery_with_ovk, Domain, EphemeralKeyBytes, OutgoingCipherKey,
+};
 use zcash_proofs::prover::LocalTxProver;
 use zcash_protocol::{consensus::NetworkConstants, memo::Memo};
+use zcash_script::script::Evaluable;
+use zcash_transparent::address::TransparentAddress;
 
 use crate::{
-    api::pay::{PcztPackage, SigningEvent},
     api::coin::Network,
+    api::pay::{PcztPackage, SigningEvent},
     db::get_account_aindex,
     ledger::{
         hashers::{
@@ -42,38 +43,30 @@ use crate::{
         LedgerError, LedgerResult,
     },
     pay::plan::get_sapling_prover,
-    tiu, IntoAnyhow,
+    tiu, IntoAnyhow, Sink,
 };
 
-#[cfg(feature = "flutter")]
-use crate::{frb_generated::StreamSink, ledger::transport::Device};
+use crate::ledger::transport::Device;
 
 #[allow(clippy::too_many_arguments)]
-#[cfg(feature = "flutter")]
-pub async fn sign_transaction<D: Device + Sync, R: RngCore + CryptoRng>(
+pub async fn sign_transaction<D: Device + Sync, S, R: RngCore + CryptoRng>(
     network: &Network,
     connection: &mut SqliteConnection,
     account: u32,
     package: &PcztPackage,
     prover: &LocalTxProver,
-    sink: &StreamSink<SigningEvent>,
+    sink: &S,
     ledger: &D,
     mut rng: R,
-) -> LedgerResult<()> {
-    let s = sink;
+) -> LedgerResult<PcztPackage>
+where
+    S: Sink<SigningEvent> + Sync,
+{
     let run = async move {
         use crate::ledger::transport::APDUCommand;
 
         let coin_type = network.coin_type();
         let aindex = get_account_aindex(&mut *connection, account).await?;
-        let (xvk,): (Vec<u8>,) =
-            sqlx::query_as("SELECT xvk FROM sapling_accounts WHERE account = ?1")
-                .bind(account)
-                .fetch_one(&mut *connection)
-                .await
-                .anyhow()?;
-        let fvk = FullViewingKey::read(&*xvk)?;
-        let ovk = fvk.ovk;
 
         let pczt = Pczt::parse(&package.pczt).expect("cannot parse PCZT");
 
@@ -92,9 +85,28 @@ pub async fn sign_transaction<D: Device + Sync, R: RngCore + CryptoRng>(
             return Err(LedgerError::TooComplex);
         }
 
+        // The Sapling full viewing key is only needed when the transaction
+        // actually contains Sapling spends/outputs. Transparent-only accounts
+        // (e.g. BIP-44 Ledger accounts) have no `sapling_accounts` row, so
+        // fetching it unconditionally would fail with `RowNotFound` and abort
+        // signing before the Ledger is ever contacted. The values derived from
+        // it (`fvk`, `ovk`) are only referenced inside the Sapling loops below,
+        // which only iterate when Sapling components are present.
+        let fvk = if stin > 0 || stout > 0 {
+            let (xvk,): (Vec<u8>,) =
+                sqlx::query_as("SELECT xvk FROM sapling_accounts WHERE account = ?1")
+                    .bind(account)
+                    .fetch_one(&mut *connection)
+                    .await
+                    .anyhow()?;
+            Some(FullViewingKey::read(&*xvk)?)
+        } else {
+            None
+        };
+
         // Signing a tx with the Ledger involves several steps
         // Step 1. Send a InitTx instruction with inputs/outputs
-        let _ = sink.add(SigningEvent::Progress("Init Tx".to_string()));
+        sink.send(SigningEvent::Progress("Init Tx".to_string())).await;
         data.write_u8(ctin as u8)?;
         data.write_u8(ctout as u8)?;
         data.write_u8(stin as u8)?;
@@ -160,6 +172,7 @@ pub async fn sign_transaction<D: Device + Sync, R: RngCore + CryptoRng>(
             .await.anyhow()?;
 
             let diversifier = Diversifier(tiu!(diversifier));
+            let fvk = fvk.as_ref().expect("fvk present for Sapling spends");
             let recipient = fvk.vk.to_payment_address(diversifier).unwrap();
             let mut data = vec![];
             data.write_u32::<LE>(aindex)?;
@@ -171,6 +184,8 @@ pub async fn sign_transaction<D: Device + Sync, R: RngCore + CryptoRng>(
 
         let mut memos = vec![];
         for sout in pczt.sapling().outputs().iter() {
+            let fvk = fvk.as_ref().expect("fvk present for Sapling outputs");
+            let ovk = fvk.ovk;
             let recipient = sout.recipient().unwrap();
             // Decrypt the memo so that we can reencrypt it with the
             // randomness
@@ -202,7 +217,7 @@ pub async fn sign_transaction<D: Device + Sync, R: RngCore + CryptoRng>(
                     let memo_bytes = memo.encode();
                     let memo: [u8; 512] = tiu!(*memo_bytes.as_array());
                     memo
-                },
+                }
             };
             let memo_type = memo[0];
             memos.push(memo);
@@ -219,7 +234,9 @@ pub async fn sign_transaction<D: Device + Sync, R: RngCore + CryptoRng>(
 
         // This will make the Ledger show "Please Review..."
         info!("Confirm Tx on Ledger");
-        let _ = sink.add(SigningEvent::Progress("Confirm Tx on Ledger".to_string()));
+        sink
+            .send(SigningEvent::Progress("Confirm Tx on Ledger".to_string()))
+            .await;
         let init_tx = APDUCommand {
             cla: 0x85,
             ins: 0xA0,
@@ -265,9 +282,11 @@ pub async fn sign_transaction<D: Device + Sync, R: RngCore + CryptoRng>(
             data: vec![],
         };
         for sp in pczt.sapling().spends().iter() {
-            let _ = sink.add(SigningEvent::Progress(
-                "Extracting spend randomness".to_string(),
-            ));
+            sink
+                .send(SigningEvent::Progress(
+                    "Extracting spend randomness".to_string(),
+                ))
+                .await;
             let res = ledger.execute(xtract_sp.clone()).await?;
             assert_eq!(res.retcode, 0x9000);
             let data = &res.data;
@@ -290,6 +309,7 @@ pub async fn sign_transaction<D: Device + Sync, R: RngCore + CryptoRng>(
             let rcm: [u8; 32] = tiu!(rcm);
             let rcv: [u8; 32] = tiu!(rcv);
             let diversifier = Diversifier(tiu!(diversifier));
+            let fvk = fvk.as_ref().expect("fvk present for Sapling spends");
             let recipient = fvk.vk.to_payment_address(diversifier).unwrap();
             let rseed = Rseed::BeforeZip212(Fr::from_bytes(&rcm).unwrap());
             let note = Note::from_parts(recipient, NoteValue::from_raw(value), rseed);
@@ -315,9 +335,13 @@ pub async fn sign_transaction<D: Device + Sync, R: RngCore + CryptoRng>(
             data: vec![],
         };
         for (out, memo) in pczt.sapling().outputs().iter().zip(memos.iter()) {
-            let _ = sink.add(SigningEvent::Progress(
-                "Extracting output randomness".to_string(),
-            ));
+            let fvk = fvk.as_ref().expect("fvk present for Sapling outputs");
+            let ovk = fvk.ovk;
+            sink
+                .send(SigningEvent::Progress(
+                    "Extracting output randomness".to_string(),
+                ))
+                .await;
             let res = ledger.execute(xtract_out.clone()).await?;
             assert_eq!(res.retcode, 0x9000);
             let data = &res.data;
@@ -363,12 +387,10 @@ pub async fn sign_transaction<D: Device + Sync, R: RngCore + CryptoRng>(
                     u.update_spend_with(i, |mut su_updater| {
                         let rcv = ValueCommitTrapdoor::from_bytes(su.rcv).unwrap();
                         let alpha = jubjub::Fr::from_bytes(&su.alpha).unwrap();
-                        let cv = ValueCommitment::derive(
-                            NoteValue::from_raw(su.value),
-                            rcv,
-                        );
+                        let cv = ValueCommitment::derive(NoteValue::from_raw(su.value), rcv);
                         let pk: VerificationKeyBytes<SpendAuth> = su.ak.into();
-                        let pk: VerificationKey<SpendAuth> = pk.try_into().expect("valid ak from Ledger");
+                        let pk: VerificationKey<SpendAuth> =
+                            pk.try_into().expect("valid ak from Ledger");
                         let rk = pk.randomize(&alpha);
                         // Re-derive rcv since ValueCommitment::derive consumed it
                         let rcv2 = ValueCommitTrapdoor::from_bytes(su.rcv).unwrap();
@@ -378,7 +400,8 @@ pub async fn sign_transaction<D: Device + Sync, R: RngCore + CryptoRng>(
                         su_updater.set_alpha(alpha);
                         su_updater.set_rseed(su.rseed);
                         Ok(())
-                    }).unwrap();
+                    })
+                    .unwrap();
                 }
                 for (i, ou) in output_updates.iter().enumerate() {
                     u.update_output_with(i, |mut ou_updater| {
@@ -387,11 +410,8 @@ pub async fn sign_transaction<D: Device + Sync, R: RngCore + CryptoRng>(
                         let cv = ValueCommitment::derive(value_note, rcv);
                         let rcv2 = ValueCommitTrapdoor::from_bytes(ou.rcv).unwrap();
                         let recipient = PaymentAddress::from_bytes(&ou.recipient_bytes).unwrap();
-                        let note = Note::from_parts(
-                            recipient,
-                            value_note,
-                            Rseed::AfterZip212(ou.rseed),
-                        );
+                        let note =
+                            Note::from_parts(recipient, value_note, Rseed::AfterZip212(ou.rseed));
                         let cmu = note.cmu();
                         let epk = EphemeralKeyBytes(ou.epk_bytes);
                         let ock = OutgoingCipherKey(ou.ock_bytes);
@@ -404,7 +424,8 @@ pub async fn sign_transaction<D: Device + Sync, R: RngCore + CryptoRng>(
                         ou_updater.set_rseed(ou.rseed);
                         ou_updater.set_ock(ock);
                         Ok(())
-                    }).unwrap();
+                    })
+                    .unwrap();
                 }
                 Ok(())
             })
@@ -415,8 +436,9 @@ pub async fn sign_transaction<D: Device + Sync, R: RngCore + CryptoRng>(
 
         let pczt = if !pczt.sapling().spends().is_empty() || !pczt.sapling().outputs().is_empty() {
             let updater = Updater::new(pczt);
+            let fvk = fvk.as_ref().expect("fvk present for Sapling proofs");
             let nsk = Fr::from_bytes(&nsk).unwrap();
-            let pgk = ProofGenerationKey { ak: fvk.vk.ak, nsk };
+            let pgk = ProofGenerationKey { ak: fvk.vk.ak.clone(), nsk };
 
             let updater = updater
                 .update_sapling_with(|mut u| {
@@ -442,7 +464,7 @@ pub async fn sign_transaction<D: Device + Sync, R: RngCore + CryptoRng>(
         };
 
         info!("Adding proofs to PCZT");
-        let _ = sink.add(SigningEvent::Progress("Computing ZKPs".to_string()));
+        sink.send(SigningEvent::Progress("Computing ZKPs".to_string())).await;
         let pczt = Prover::new(pczt)
             .create_sapling_proofs(prover, prover)
             .unwrap()
@@ -471,7 +493,19 @@ pub async fn sign_transaction<D: Device + Sync, R: RngCore + CryptoRng>(
             buffers.push(data);
         }
         // Read zkproof from sapling-crypto types (pczt types don't expose it)
-        let anchor = *pczt.sapling().anchor();
+        // The Sapling anchor is only present when there are Sapling spends. A
+        // transparent-only transaction has no Sapling bundle, so `anchor()` is
+        // `None`; only fetch it when there are spends to serialize.
+        let anchor = if stin > 0 {
+            Some(
+                pczt
+                    .sapling()
+                    .anchor()
+                    .expect("a Sapling bundle with spends must have an anchor"),
+            )
+        } else {
+            None
+        };
         // Use update_sapling_with to access sapling-crypto Spend/Output which have full
         // getters including zkproof()
         let mut proof_bufs: Vec<Vec<u8>> = vec![];
@@ -483,11 +517,16 @@ pub async fn sign_transaction<D: Device + Sync, R: RngCore + CryptoRng>(
                     for sin in bundle.spends() {
                         let mut data = vec![];
                         data.write_all(&sin.cv().to_bytes()).unwrap();
-                        data.write_all(&anchor).unwrap();
+                        data.write_all(
+                            anchor.as_ref().expect("anchor present for Sapling spends"),
+                        )
+                        .unwrap();
                         data.write_all(sin.nullifier().as_ref()).unwrap();
                         let rk_bytes: [u8; 32] = VerificationKeyBytes::from(*sin.rk()).into();
                         data.write_all(&rk_bytes).unwrap();
-                        let zkp = sin.zkproof().expect("spend must have zkproof after proving");
+                        let zkp = sin
+                            .zkproof()
+                            .expect("spend must have zkproof after proving");
                         data.write_all(zkp.as_ref()).unwrap();
                         assert_eq!(data.len(), 320);
                         proof_bufs.push(data);
@@ -499,7 +538,9 @@ pub async fn sign_transaction<D: Device + Sync, R: RngCore + CryptoRng>(
                         data.write_all(sout.ephemeral_key().as_ref()).unwrap();
                         data.write_all(sout.enc_ciphertext()).unwrap();
                         data.write_all(sout.out_ciphertext()).unwrap();
-                        let zkp = sout.zkproof().expect("output must have zkproof after proving");
+                        let zkp = sout
+                            .zkproof()
+                            .expect("output must have zkproof after proving");
                         data.write_all(zkp.as_ref()).unwrap();
                         assert_eq!(data.len(), 948);
                         proof_bufs.push(data);
@@ -534,9 +575,11 @@ pub async fn sign_transaction<D: Device + Sync, R: RngCore + CryptoRng>(
         assert_eq!(sighashes.len(), 220);
         buffers.push(sighashes);
 
-        let _ = sink.add(SigningEvent::Progress(
-            "Checking Tx and Signing on Ledger".to_string(),
-        ));
+        sink
+            .send(SigningEvent::Progress(
+                "Checking Tx and Signing on Ledger".to_string(),
+            ))
+            .await;
         let check_sign = APDUCommand {
             cla: 0x85,
             ins: 0xA3,
@@ -552,9 +595,11 @@ pub async fn sign_transaction<D: Device + Sync, R: RngCore + CryptoRng>(
         // Starting from the transparent inputs
         let mut tsigs = vec![];
         for _ in pczt.transparent().inputs() {
-            let _ = sink.add(SigningEvent::Progress(
-                "Getting transparent signature".to_string(),
-            ));
+            sink
+                .send(SigningEvent::Progress(
+                    "Getting transparent signature".to_string(),
+                ))
+                .await;
             let get_tsig = APDUCommand {
                 cla: 0x85,
                 ins: 0xA5,
@@ -572,9 +617,11 @@ pub async fn sign_transaction<D: Device + Sync, R: RngCore + CryptoRng>(
         // And then the shielded spends
         let mut ssigs = vec![];
         for _ in pczt.sapling().spends() {
-            let _ = sink.add(SigningEvent::Progress(
-                "Getting shielded signature".to_string(),
-            ));
+            sink
+                .send(SigningEvent::Progress(
+                    "Getting shielded signature".to_string(),
+                ))
+                .await;
             let get_ssig = APDUCommand {
                 cla: 0x85,
                 ins: 0xA4,
@@ -607,7 +654,9 @@ pub async fn sign_transaction<D: Device + Sync, R: RngCore + CryptoRng>(
 
         let mut signer = pczt::roles::signer::Signer::new(pczt).unwrap();
         for (index, signature) in tsigs.iter().enumerate() {
-            signer.append_transparent_signature(index, *signature).unwrap();
+            signer
+                .append_transparent_signature(index, *signature)
+                .unwrap();
         }
         for (index, signature) in ssigs.iter().enumerate() {
             signer.apply_sapling_signature(index, *signature).unwrap();
@@ -646,42 +695,33 @@ pub async fn sign_transaction<D: Device + Sync, R: RngCore + CryptoRng>(
         };
         Ok(new_package)
     };
-    match run.await {
-        Ok(new_package) => {
-            let _ = sink.add(SigningEvent::Result(new_package));
-        }
-        Err(error) => {
-            let _ = s.add_error(anyhow::Error::new(error));
-        }
-    }
-    Ok(())
+    run.await
 }
 
-#[cfg(feature = "flutter")]
-pub async fn sign_ledger_transaction(
+pub async fn sign_ledger_transaction<S>(
     network: Network,
-    sink: StreamSink<SigningEvent>,
+    sink: &S,
     mut connection: PoolConnection<Sqlite>,
     account: u32,
     package: PcztPackage,
-) -> Result<()> {
-    tokio::spawn(async move {
-        use crate::ledger::transport::connect_ledger;
+) -> anyhow::Result<PcztPackage>
+where
+    S: Sink<SigningEvent> + Sync,
+{
+    use crate::ledger::transport::connect_ledger;
 
-        let ledger = connect_ledger().await?;
-        let sapling_prover = get_sapling_prover().await?;
-        sign_transaction(
-            &network,
-            &mut connection,
-            account,
-            &package,
-            sapling_prover,
-            &sink,
-            &ledger,
-            OsRng,
-        )
-        .await?;
-        Ok::<_, LedgerError>(())
-    });
-    Ok(())
+    let ledger = connect_ledger().await?;
+    let sapling_prover = get_sapling_prover().await?;
+    let signed = sign_transaction(
+        &network,
+        &mut connection,
+        account,
+        &package,
+        sapling_prover,
+        sink,
+        &ledger,
+        OsRng,
+    )
+    .await?;
+    Ok(signed)
 }

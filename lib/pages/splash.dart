@@ -103,9 +103,14 @@ class SplashPageState extends ConsumerState<SplashPage> {
       serverType: settings.isLightNode ? 0 : 1,
       url: settings.lwd,
     );
-    c = await c.setUseTor(useTor: settings.useTor);
+    c = c.setTransport(transport: settings.transport);
     c = c.setProxy(proxy: settings.proxy);
     coinContext.set(coin: c);
+    // Re-arm helper-share tracking for rounds with pending share work, so a
+    // client restart resumes share delivery without visiting the voting page.
+    if (settings.votingConfigUrl.isNotEmpty) {
+      unawaited(Future(() => ref.read(shareTrackingArmProvider.notifier).run()));
+    }
     final synchronizer = ref.read(synchronizerProvider.notifier);
     synchronizer.autoSync();
     final mempool = ref.read(mempoolProvider.notifier);

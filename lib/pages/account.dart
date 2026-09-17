@@ -17,7 +17,6 @@ import 'package:searchable_listview/searchable_listview.dart';
 
 import 'package:zkool/main.dart';
 import 'package:zkool/pages/tx.dart';
-import 'package:zkool/pages/zsa.dart';
 import 'package:zkool/router.dart';
 import 'package:zkool/src/rust/api/account.dart';
 import 'package:zkool/src/rust/api/sync.dart';
@@ -56,6 +55,8 @@ class AccountViewPageState extends ConsumerState<AccountViewPage> with SingleTic
   // Tx search
   final _txSearchController = TextEditingController();
   String _txSearchQuery = '';
+  bool _showDustNotes = true;
+  bool _groupByPool = false;
 
   @override
   void initState() {
@@ -232,13 +233,13 @@ class AccountViewPageState extends ConsumerState<AccountViewPage> with SingleTic
                 case "update_fx":
                   onUpdateAllTxPrices();
                 case "toggle_tx_view":
-                  ref.read(appSettingsProvider.notifier)
-                      .setTransactionViewMode(
-                          !(ref.read(appSettingsProvider).value?.transactionTableMode ?? false));
+                  ref.read(appSettingsProvider.notifier).setTransactionViewMode(!(ref.read(appSettingsProvider).value?.transactionTableMode ?? false));
                 case "charts":
                   GoRouter.of(context).push("/chart");
                 case "migration":
                   GoRouter.of(context).push("/migrate");
+                case "voting":
+                  GoRouter.of(context).push("/voting");
                 case "settings":
                   GoRouter.of(context).push("/settings");
                 default:
@@ -276,9 +277,7 @@ class AccountViewPageState extends ConsumerState<AccountViewPage> with SingleTic
               ),
               PopupMenuItem<String>(
                 value: "toggle_tx_view",
-                child: Text((ref.read(appSettingsProvider).value?.transactionTableMode ?? false)
-                    ? "View: List"
-                    : "View: Table"),
+                child: Text((ref.read(appSettingsProvider).value?.transactionTableMode ?? false) ? "View: List" : "View: Table"),
               ),
               if (!Platform.isLinux)
                 const PopupMenuItem<String>(
@@ -291,6 +290,10 @@ class AccountViewPageState extends ConsumerState<AccountViewPage> with SingleTic
                   value: "migration",
                   child: Text("Note Migration"),
                 ),
+              const PopupMenuItem<String>(
+                value: "voting",
+                child: Text("Voting"),
+              ),
             ],
           ),
         ],
@@ -338,7 +341,25 @@ class AccountViewPageState extends ConsumerState<AccountViewPage> with SingleTic
                                   const Gap(4),
                                   const ExchangeRateButton(),
                                   Gap(8),
-                                  BalanceWidget(account.balance),
+                                  GestureDetector(
+                                    behavior: HitTestBehavior.opaque,
+                                    onTap: () => ref
+                                        .read(appSettingsProvider.notifier)
+                                        .setCollapsePoolBalances(!settings.collapsePoolBalances),
+                                    child: SizedBox(
+                                      width: double.infinity,
+                                      child: settings.collapsePoolBalances
+                                          ? Row(
+                                              mainAxisAlignment: MainAxisAlignment.center,
+                                              children: [
+                                                Icon(Icons.expand_more, size: 18),
+                                                const Gap(4),
+                                                Text("Pool Balances", style: tt.bodySmall),
+                                              ],
+                                            )
+                                          : BalanceWidget(account.balance),
+                                    ),
+                                  ),
                                 ]),
                               ),
                               Gap(8),
@@ -407,12 +428,11 @@ class AccountViewPageState extends ConsumerState<AccountViewPage> with SingleTic
                     ],
                   ),
                   showMemos(context, account.memos, () {
-                    final selectedAccount =
-                        ref.read(selectedAccountProvider).requireValue!;
-                    ref.invalidate(
-                        accountProvider(selectedAccount.id));
+                    final selectedAccount = ref.read(selectedAccountProvider).requireValue!;
+                    ref.invalidate(accountProvider(selectedAccount.id));
                   }),
-                  showNotes(ref, account.notes),
+                  showNotes(ref, account.notes, _showDustNotes, () => setState(() => _showDustNotes = !_showDustNotes), _groupByPool,
+                      () => setState(() => _groupByPool = !_groupByPool)),
                   _showZsaHoldings(context, account.zsas),
                 ],
               ));
@@ -512,14 +532,6 @@ class AccountViewPageState extends ConsumerState<AccountViewPage> with SingleTic
                 children: [
                   Expanded(
                     child: ListTile(
-                      onTap: () => GoRouter.of(context).push(
-                        "/zsa/issue",
-                        extra: IssuanceArgs(
-                          assetName: displayName,
-                          isReissuance: true,
-                          assetDescHash: h.assetDescHash,
-                        ),
-                      ),
                       leading: CircleAvatar(
                         backgroundColor: Colors.blue,
                         child: Text(
@@ -996,9 +1008,7 @@ Uint8List trimTrailingZeros(Uint8List bytes) {
 Widget showMemos(BuildContext context, List<Memo> memos, VoidCallback onMemoChanged) {
   // Use a key derived from the memo list content to force rebuild when memos update,
   // since SearchableList only reads initialList once.
-  final memoKey = memos.isEmpty
-      ? 'empty'
-      : '${memos.first.id}_${memos.last.id}_${memos.length}';
+  final memoKey = memos.isEmpty ? 'empty' : '${memos.first.id}_${memos.last.id}_${memos.length}';
   return SearchableList(
     key: ValueKey(memoKey),
     initialList: memos,
@@ -1011,30 +1021,107 @@ Widget showMemos(BuildContext context, List<Memo> memos, VoidCallback onMemoChan
   );
 }
 
-Widget showNotes(WidgetRef ref, List<TxNote> notes) {
+Widget showNotes(WidgetRef ref, List<TxNote> notes, bool showDust, VoidCallback onToggleDust, bool groupByPool, VoidCallback onToggleGroup) {
   final t = Theme.of(navigatorKey.currentContext!);
   final currentHeight = ref.read(currentHeightProvider).value;
+  final dustThreshold = BigInt.from(5000);
+  final filtered = showDust ? notes : notes.where((n) => n.idAsset != null || n.value > dustThreshold).toList();
+
+  // Build grouped items: header + its notes
+  List<({int pool, List<TxNote> poolNotes})> groups = [];
+  if (groupByPool) {
+    final grouped = <int, List<TxNote>>{};
+    for (final n in filtered) {
+      grouped.putIfAbsent(n.pool, () => []).add(n);
+    }
+    // Sort pools in display order: Transparent, Sapling, Orchard, Ironwood
+    final poolOrder = [0, 1, 2, 3];
+    groups = poolOrder.where((p) => grouped.containsKey(p)).map((p) => (pool: p, poolNotes: grouped[p]!)).toList();
+  }
+
+  // Flattened item count: toolbar + (header + notes per group) or all notes flat
+  final totalItems = groupByPool ? 1 + groups.fold<int>(0, (sum, g) => sum + 1 + g.poolNotes.length) : filtered.length + 1;
+
   return ListView.builder(
-    itemCount: notes.length + 1,
+    itemCount: totalItems,
     itemBuilder: (context, index) {
       if (index == 0)
         return OverflowBar(
           children: [
             IconButton(onPressed: () => onLockRecent(ref, context, currentHeight), tooltip: "Lock recently mined notes", icon: Icon(Icons.table_rows)),
+            IconButton(onPressed: () => onToggleAll(ref, context), tooltip: "Toggle all notes", icon: Icon(Icons.sync_alt)),
             IconButton(onPressed: () => onUnlockAll(ref, context), tooltip: "Unlock all notes", icon: Icon(Icons.select_all)),
+            IconButton(
+              onPressed: onToggleDust,
+              tooltip: showDust ? "Hide dust notes" : "Show dust notes",
+              icon: Icon(showDust ? Icons.filter_alt_off : Icons.filter_alt),
+            ),
+            IconButton(
+              onPressed: onToggleGroup,
+              tooltip: groupByPool ? "Ungroup notes" : "Group by pool",
+              icon: Icon(groupByPool ? Icons.dashboard : Icons.view_list),
+            ),
           ],
         );
 
+      if (groupByPool) {
+        // Walk the grouped structure
+        int offset = 1;
+        for (final g in groups) {
+          // Header
+          if (offset == index) {
+            final allLocked = g.poolNotes.every((n) => n.locked);
+            return Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 8, 0),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      poolToString(g.pool),
+                      style: t.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.bold,
+                        color: t.colorScheme.primary,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => onTogglePoolNotes(ref, context, g.poolNotes),
+                    tooltip: allLocked ? "Unlock all in pool" : "Lock all in pool",
+                    icon: Icon(allLocked ? Icons.lock_open : Icons.lock_outline),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ],
+              ),
+            );
+          }
+          offset++;
+          // Notes in this group
+          if (index < offset + g.poolNotes.length) {
+            final note = g.poolNotes[index - offset];
+            return ListTile(
+              key: ValueKey(note.id),
+              dense: true,
+              onTap: () => toggleLock(ref, context, note.id, !note.locked),
+              leading: Text("${note.height}"),
+              title: Text(poolToString(note.pool)),
+              trailing: note.idAsset != null ? Text("${note.value} ${note.assetDisplay}", softWrap: false) : zatToText(note.value, selectable: false),
+              textColor: note.locked ? t.disabledColor : null,
+            );
+          }
+          offset += g.poolNotes.length;
+        }
+        // Shouldn't reach here
+        return const SizedBox.shrink();
+      }
+
       final noteIndex = index - 1;
-      final note = notes[noteIndex];
+      final note = filtered[noteIndex];
       return ListTile(
         key: ValueKey(note.id),
         onTap: () => toggleLock(ref, context, note.id, !note.locked),
         leading: Text("${note.height}"),
         title: Text(poolToString(note.pool)),
-        trailing: note.idAsset != null
-            ? Text("${note.value} ${note.assetDisplay}", softWrap: false)
-            : zatToText(note.value, selectable: false),
+        trailing: note.idAsset != null ? Text("${note.value} ${note.assetDisplay}", softWrap: false) : zatToText(note.value, selectable: false),
         textColor: note.locked ? t.disabledColor : null,
       );
     },
@@ -1065,6 +1152,27 @@ void onUnlockAll(WidgetRef ref, BuildContext context) async {
     final selectedAccount = ref.read(selectedAccountProvider).requireValue!;
     ref.invalidate(accountProvider(selectedAccount.id));
   }
+}
+
+void onToggleAll(WidgetRef ref, BuildContext context) async {
+  final c = coinContext.coin;
+  final confirmed = await confirmDialog(context, title: "Toggle All", message: "Do you want to toggle the lock state of every note?");
+  if (confirmed) {
+    await toggleAllNotes(c: c);
+    final selectedAccount = ref.read(selectedAccountProvider).requireValue!;
+    ref.invalidate(accountProvider(selectedAccount.id));
+  }
+}
+
+void onTogglePoolNotes(WidgetRef ref, BuildContext context, List<TxNote> poolNotes) async {
+  final allLocked = poolNotes.every((n) => n.locked);
+  final target = !allLocked;
+  final c = coinContext.coin;
+  for (final note in poolNotes) {
+    await lockNote(id: note.id, locked: target, c: c);
+  }
+  final selectedAccount = ref.read(selectedAccountProvider).requireValue!;
+  ref.invalidate(accountProvider(selectedAccount.id));
 }
 
 void toggleLock(WidgetRef ref, BuildContext context, int id, bool locked) async {

@@ -1,15 +1,15 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
+use crate::keys::{SaplingAddressDerivation, ScopeExt};
+use crate::pay::pool::{PoolMask, POOL_IRONWOOD, POOL_ORCHARD, POOL_SAPLING, POOL_TRANSPARENT};
 use anyhow::{anyhow, Result};
 use bip39::Mnemonic;
 use csv_async::AsyncWriter;
 #[cfg(feature = "flutter")]
 use flutter_rust_bridge::frb;
 use sapling_crypto::{zip32::sapling_derive_internal_fvk, PaymentAddress};
-use crate::keys::{SaplingAddressDerivation, ScopeExt};
-use crate::pay::pool::PoolMask;
-use sqlx::{Row, SqliteConnection, sqlite::SqliteRow};
+use sqlx::{sqlite::SqliteRow, Row, SqliteConnection};
 use zcash_address::unified::{Container, Encoding};
 use zcash_keys::{
     address::UnifiedAddress,
@@ -20,12 +20,15 @@ use zcash_protocol::consensus::Parameters as ZkParams;
 use zcash_transparent::address::TransparentAddress;
 use zip32::AccountId;
 
-use crate::{api::pay::PcztPackage, frb_generated::StreamSink};
+use crate::api::pay::PcztPackage;
+#[cfg(feature = "flutter")]
+use crate::frb_generated::StreamSink;
 use crate::{
     api::{coin::Coin, pay::SigningEvent},
     db::{get_account_dindex, get_account_hw},
     io::{decrypt, encrypt},
-    ledger::HWAPI,
+    ledger::{HwKind, LedgerApp},
+    Sink,
 };
 
 #[cfg_attr(feature = "flutter", frb)]
@@ -39,15 +42,15 @@ pub async fn get_account_pools(account: u32, c: &Coin) -> Result<u8> {
 
     let mut pools = 0;
     if tkeys.xvk.is_some() || tkeys.address.is_some() {
-        pools |= 1;
+        pools |= POOL_TRANSPARENT;
     }
     if skeys.xvk.is_some() {
-        pools |= 2;
+        pools |= POOL_SAPLING;
     }
     if okeys.xvk.is_some() {
-        pools |= 4;
+        pools |= POOL_ORCHARD;
         // Ironwood uses the same keys as Orchard
-        pools |= 8;
+        pools |= POOL_IRONWOOD;
     }
     Ok(pools)
 }
@@ -311,7 +314,7 @@ pub struct NewAccount {
     pub pools: Option<u8>,
     pub use_internal: bool,
     pub internal: bool,
-    pub ledger: bool,
+    pub hw: u8,
 }
 
 #[cfg_attr(feature = "flutter", frb(dart_metadata = ("freezed")))]
@@ -321,6 +324,8 @@ pub struct Tx {
     pub height: u32,
     pub time: u32,
     pub value: i64,
+    /// Fee paid, in zatoshis. Recorded when the transaction's memos are
+    /// decrypted; zero for transactions whose details have not been fetched.
     pub fee: i64,
     pub tpe: Option<u8>,
     pub category: Option<String>,
@@ -432,7 +437,11 @@ pub async fn fetch_transparent_address_tx_count(c: &Coin) -> Result<Vec<TAddress
 }
 
 #[cfg_attr(feature = "flutter", frb)]
-pub async fn fetch_address_tx_count(c: &Coin, aggregate: bool, pool_filter: u8) -> Result<Vec<TAddressTxCount>> {
+pub async fn fetch_address_tx_count(
+    c: &Coin,
+    aggregate: bool,
+    pool_filter: u8,
+) -> Result<Vec<TAddressTxCount>> {
     let mut connection = c.get_connection().await?;
     let network = c.network();
 
@@ -442,9 +451,23 @@ pub async fn fetch_address_tx_count(c: &Coin, aggregate: bool, pool_filter: u8) 
     let s_pool = crate::db::select_account_sapling(&network, &mut connection, c.account).await;
     let o_pool = crate::db::select_account_orchard(&mut connection, c.account).await;
 
-    let enabled_pools = (if t_pool.as_ref().map(|t| t.xvk.is_some() || t.address.is_some()).unwrap_or(false) { 1u8 } else { 0u8 })
-        | (if s_pool.as_ref().map(|s| s.xvk.is_some()).unwrap_or(false) { 2u8 } else { 0u8 })
-        | (if o_pool.as_ref().map(|o| o.xvk.is_some()).unwrap_or(false) { 4u8 } else { 0u8 });
+    let enabled_pools = (if t_pool
+        .as_ref()
+        .map(|t| t.xvk.is_some() || t.address.is_some())
+        .unwrap_or(false)
+    {
+        1u8
+    } else {
+        0u8
+    }) | (if s_pool.as_ref().map(|s| s.xvk.is_some()).unwrap_or(false) {
+        2u8
+    } else {
+        0u8
+    }) | (if o_pool.as_ref().map(|o| o.xvk.is_some()).unwrap_or(false) {
+        4u8
+    } else {
+        0u8
+    });
 
     // Only derive addresses for pools that are both selected and enabled
     let selected = PoolMask(pool_filter).intersect(&PoolMask(enabled_pools));
@@ -454,7 +477,8 @@ pub async fn fetch_address_tx_count(c: &Coin, aggregate: bool, pool_filter: u8) 
     let okeys = o_pool?;
 
     // Fetch per-slot stats for transparent and shielded pools
-    let transparent_stats = crate::db::fetch_transparent_slot_stats(&mut connection, c.account).await?;
+    let transparent_stats =
+        crate::db::fetch_transparent_slot_stats(&mut connection, c.account).await?;
     let shielded_stats = crate::db::fetch_shielded_slot_stats(&mut connection, c.account).await?;
 
     // Per-pool stats lookups (kept separate, not merged)
@@ -468,16 +492,17 @@ pub async fn fetch_address_tx_count(c: &Coin, aggregate: bool, pool_filter: u8) 
         .collect();
 
     // Pre-compute internal Sapling IVK
-    let internal_sap_ivk: Option<sapling_crypto::zip32::IncomingViewingKey> = skeys.xvk.as_ref().and_then(|dfvk| {
-        let dfvk_bytes = dfvk.to_bytes();
-        let dk_bytes: [u8; 32] = dfvk_bytes[96..128].try_into().ok()?;
-        let dk = sapling_crypto::zip32::DiversifierKey::from_bytes(dk_bytes);
-        let (int_fvk, int_dk) = sapling_derive_internal_fvk(dfvk.fvk(), &dk);
-        let mut ivk_bytes = [0u8; 64];
-        ivk_bytes[..32].copy_from_slice(int_dk.as_bytes());
-        ivk_bytes[32..].copy_from_slice(&int_fvk.vk.ivk().to_repr());
-        sapling_crypto::zip32::IncomingViewingKey::from_bytes(&ivk_bytes).into_option()
-    });
+    let internal_sap_ivk: Option<sapling_crypto::zip32::IncomingViewingKey> =
+        skeys.xvk.as_ref().and_then(|dfvk| {
+            let dfvk_bytes = dfvk.to_bytes();
+            let dk_bytes: [u8; 32] = dfvk_bytes[96..128].try_into().ok()?;
+            let dk = sapling_crypto::zip32::DiversifierKey::from_bytes(dk_bytes);
+            let (int_fvk, int_dk) = sapling_derive_internal_fvk(dfvk.fvk(), &dk);
+            let mut ivk_bytes = [0u8; 64];
+            ivk_bytes[..32].copy_from_slice(int_dk.as_bytes());
+            ivk_bytes[32..].copy_from_slice(&int_fvk.vk.ivk().to_repr());
+            sapling_crypto::zip32::IncomingViewingKey::from_bytes(&ivk_bytes).into_option()
+        });
 
     let mut results = Vec::new();
 
@@ -505,19 +530,33 @@ pub async fn fetch_address_tx_count(c: &Coin, aggregate: bool, pool_filter: u8) 
                 let mut t_addr_raw: Option<TransparentAddress> = None;
                 let t_str = if selected.has_pool(0) {
                     if let Some(tvk) = &tkeys.xvk {
-                        let (_, taddr) = crate::account::derive_transparent_address(tvk, scope as u32, d, false)?;
+                        let (_, taddr) = crate::account::derive_transparent_address(
+                            tvk,
+                            scope as u32,
+                            d,
+                            false,
+                        )?;
                         t_addr_raw = Some(taddr);
                         Some(taddr.encode(&network))
-                    } else { None }
-                } else { None };
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
 
                 let mut s_addr_raw: Option<sapling_crypto::PaymentAddress> = None;
                 let s_str = if selected.has_pool(1) {
                     if let Some(dfvk) = &skeys.xvk {
-                        s_addr_raw = dfvk.sapling_address_at(scope, d as u64, internal_sap_ivk.as_ref());
+                        s_addr_raw =
+                            dfvk.sapling_address_at(scope, d as u64, internal_sap_ivk.as_ref());
                         s_addr_raw.as_ref().map(|pa| pa.encode(&network))
-                    } else { None }
-                } else { None };
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
 
                 let mut o_addr_raw: Option<orchard::Address> = None;
                 let o_str = if selected.has_pool(2) {
@@ -525,14 +564,27 @@ pub async fn fetch_address_tx_count(c: &Coin, aggregate: bool, pool_filter: u8) 
                         let s = scope.orchard_scope();
                         let addr = fvk.address_at(d as u64, s);
                         o_addr_raw = Some(addr);
-                        Some(UnifiedAddress::from_receivers(Some(addr), None, None).unwrap().encode(&network))
-                    } else { None }
-                } else { None };
+                        Some(
+                            UnifiedAddress::from_receivers(Some(addr), None, None)
+                                .unwrap()
+                                .encode(&network),
+                        )
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
 
                 if aggregate {
-                    if let Some(ua) = UnifiedAddress::from_receivers(o_addr_raw, s_addr_raw, t_addr_raw) {
+                    if let Some(ua) =
+                        UnifiedAddress::from_receivers(o_addr_raw, s_addr_raw, t_addr_raw)
+                    {
                         results.push(TAddressTxCount {
-                            pool: 0, address: ua.encode(&network), scope, dindex: d,
+                            pool: 0,
+                            address: ua.encode(&network),
+                            scope,
+                            dindex: d,
                             amount: t_st.0.wrapping_add(s_st.0).wrapping_add(o_st.0),
                             tx_count: t_st.1.wrapping_add(s_st.1).wrapping_add(o_st.1),
                             time: t_st.2.max(s_st.2).max(o_st.2),
@@ -540,13 +592,37 @@ pub async fn fetch_address_tx_count(c: &Coin, aggregate: bool, pool_filter: u8) 
                     }
                 } else {
                     if let Some(addr) = t_str {
-                        results.push(TAddressTxCount { pool: 0, address: addr, scope, dindex: d, amount: t_st.0, tx_count: t_st.1, time: t_st.2 });
+                        results.push(TAddressTxCount {
+                            pool: 0,
+                            address: addr,
+                            scope,
+                            dindex: d,
+                            amount: t_st.0,
+                            tx_count: t_st.1,
+                            time: t_st.2,
+                        });
                     }
                     if let Some(addr) = s_str {
-                        results.push(TAddressTxCount { pool: 1, address: addr, scope, dindex: d, amount: s_st.0, tx_count: s_st.1, time: s_st.2 });
+                        results.push(TAddressTxCount {
+                            pool: 1,
+                            address: addr,
+                            scope,
+                            dindex: d,
+                            amount: s_st.0,
+                            tx_count: s_st.1,
+                            time: s_st.2,
+                        });
                     }
                     if let Some(addr) = o_str {
-                        results.push(TAddressTxCount { pool: 2, address: addr, scope, dindex: d, amount: o_st.0, tx_count: o_st.1, time: o_st.2 });
+                        results.push(TAddressTxCount {
+                            pool: 2,
+                            address: addr,
+                            scope,
+                            dindex: d,
+                            amount: o_st.0,
+                            tx_count: o_st.1,
+                            time: o_st.2,
+                        });
                     }
                 }
             } else if d == 0 && selected.has_pool(0) {
@@ -555,24 +631,35 @@ pub async fn fetch_address_tx_count(c: &Coin, aggregate: bool, pool_filter: u8) 
                 let t_st = t_stats.get(&(scope, 0)).copied().unwrap_or((0, 0, 0));
 
                 let t_str = if let Some(tvk) = &tkeys.xvk {
-                    let (_, taddr) = crate::account::derive_transparent_address(
-                        tvk, scope as u32, 0, false,
-                    )?;
+                    let (_, taddr) =
+                        crate::account::derive_transparent_address(tvk, scope as u32, 0, false)?;
                     Some(taddr.encode(&network))
-                } else { None };
+                } else {
+                    None
+                };
 
                 // Aggregate of 1 taddr is the taddr itself.
                 if let Some(addr) = t_str {
                     results.push(TAddressTxCount {
-                        pool: 0, address: addr, scope, dindex: 0,
-                        amount: t_st.0, tx_count: t_st.1, time: t_st.2,
+                        pool: 0,
+                        address: addr,
+                        scope,
+                        dindex: 0,
+                        amount: t_st.0,
+                        tx_count: t_st.1,
+                        time: t_st.2,
                     });
                 }
             }
         }
     }
 
-    results.sort_by(|a, b| a.scope.cmp(&b.scope).then(a.dindex.cmp(&b.dindex)).then(a.pool.cmp(&b.pool)));
+    results.sort_by(|a, b| {
+        a.scope
+            .cmp(&b.scope)
+            .then(a.dindex.cmp(&b.dindex))
+            .then(a.pool.cmp(&b.pool))
+    });
     Ok(results)
 }
 
@@ -590,7 +677,7 @@ pub async fn import_account(passphrase: &str, data: &[u8], c: &Coin) -> Result<(
     let mut connection = c.get_connection().await?;
 
     let decrypted = decrypt(passphrase, data)?;
-    crate::io::import_account(&mut connection, &decrypted).await?;
+    crate::io::import_account(&c.network(), &mut connection, &decrypted).await?;
     Ok(())
 }
 
@@ -617,7 +704,6 @@ pub async fn print_keys(id: u32, c: &Coin) -> Result<()> {
     })
     .fetch_one(&mut *connection)
     .await?;
-
 
     let seed = seed.unwrap();
     let memo = Mnemonic::from_str(&seed).unwrap();
@@ -745,6 +831,12 @@ pub async fn unlock_all_notes(c: &Coin) -> Result<()> {
 }
 
 #[cfg_attr(feature = "flutter", frb)]
+pub async fn toggle_all_notes(c: &Coin) -> Result<()> {
+    let mut connection = c.get_connection().await?;
+    crate::db::toggle_all_notes(&mut connection, c.account).await
+}
+
+#[cfg_attr(feature = "flutter", frb)]
 pub async fn max_spendable(c: &Coin) -> Result<u64> {
     let mut connection = c.get_connection().await?;
     crate::db::max_spendable(&mut connection, c.account).await
@@ -754,7 +846,9 @@ pub async fn max_spendable(c: &Coin) -> Result<u64> {
 pub async fn show_ledger_sapling_address(c: &Coin) -> Result<String> {
     let mut connection = c.get_connection().await?;
     let ledger = get_ledger(&mut connection, c.account).await?;
-    let r = ledger.show_sapling_address(&c.network(), &mut connection, c.account).await?;
+    let r = ledger
+        .show_sapling_address(&c.network(), &mut connection, c.account)
+        .await?;
     Ok(r)
 }
 
@@ -762,20 +856,85 @@ pub async fn show_ledger_sapling_address(c: &Coin) -> Result<String> {
 pub async fn show_ledger_transparent_address(c: &Coin) -> Result<String> {
     let mut connection = c.get_connection().await?;
     let ledger = get_ledger(&mut connection, c.account).await?;
-    let r = ledger.show_transparent_address(&c.network(), &mut connection, c.account).await?;
+    let r = ledger
+        .show_transparent_address(&c.network(), &mut connection, c.account)
+        .await?;
     Ok(r)
 }
 
+#[cfg(feature = "flutter")]
 #[cfg_attr(feature = "flutter", frb)]
 pub async fn sign_ledger_transaction(
     sink: StreamSink<SigningEvent>,
     package: PcztPackage,
     c: &Coin,
 ) -> Result<()> {
-    let mut connection = c.get_connection().await?;
-    let ledger = get_ledger(&mut connection, c.account).await?;
-    ledger.sign_ledger_transaction(sink, package, c).await?;
+    let c = c.clone();
+    let account = c.account;
+    tokio::spawn(async move {
+        match sign_ledger_pczt(&sink, package, account, &c).await {
+            Ok(pkg) => sink.send(SigningEvent::Result(pkg)).await,
+            Err(e) => sink.send_error(e).await,
+        }
+    });
     Ok(())
+}
+
+#[cfg(feature = "ledger")]
+pub(crate) async fn sign_ledger_pczt<S>(
+    sink: &S,
+    package: PcztPackage,
+    account: u32,
+    c: &Coin,
+) -> Result<PcztPackage>
+where
+    S: Sink<SigningEvent> + Sync,
+{
+    let mut connection = c.get_connection().await?;
+    let hw = get_account_hw(&mut connection, account).await?;
+    match HwKind::from_hw(hw) {
+        HwKind::Zondax => {
+            crate::ledger::builder::sign_ledger_transaction(
+                c.network(),
+                sink,
+                connection,
+                account,
+                package,
+            )
+            .await
+        }
+        HwKind::Official => {
+            crate::ledger::official_sign::sign_official_transaction(
+                c.network(),
+                sink,
+                &mut connection,
+                account,
+                package,
+            )
+            .await
+        }
+        HwKind::Software => anyhow::bail!("account is not a hardware wallet"),
+    }
+}
+
+#[cfg(not(feature = "ledger"))]
+pub(crate) async fn sign_ledger_pczt<S>(
+    sink: &S,
+    package: PcztPackage,
+    account: u32,
+    c: &Coin,
+) -> Result<PcztPackage>
+where
+    S: Sink<SigningEvent> + Sync,
+{
+    let _ = (sink, package);
+    let mut connection = c.get_connection().await?;
+    let hw = get_account_hw(&mut connection, account).await?;
+    if HwKind::from_hw(hw).is_ledger() {
+        anyhow::bail!("this build has no Ledger support")
+    } else {
+        anyhow::bail!("account is not a hardware wallet")
+    }
 }
 
 #[derive(Default, Debug)]
@@ -839,21 +998,36 @@ pub struct TxMemo {
     pub memo_bytes: Vec<u8>,
 }
 
-pub(crate) async fn get_ledger(connection: &mut SqliteConnection, account: u32) -> Result<Box<dyn HWAPI + Send + Sync>> {
+pub(crate) async fn get_ledger(
+    connection: &mut SqliteConnection,
+    account: u32,
+) -> Result<Box<dyn LedgerApp + Send + Sync>> {
     let hw = get_account_hw(connection, account).await?;
-    let r: Box<dyn HWAPI + Send + Sync> = if hw == 1 {
-        #[cfg(feature = "ledger")]
-        let d = Box::new(crate::ledger::nano::NanoLedger {});
-
-        #[cfg(not(feature = "ledger"))]
-        let d = Box::new(());
-
-        d
-    } else {
-        Box::new(())
-    };
-    Ok(r)
+    Ok(match HwKind::from_hw(hw) {
+        HwKind::Zondax => {
+            #[cfg(feature = "ledger")]
+            {
+                Box::new(crate::ledger::nano::ZondaxApp {})
+            }
+            #[cfg(not(feature = "ledger"))]
+            {
+                Box::new(crate::ledger::mock::StubLedger::no_support())
+            }
+        }
+        HwKind::Official => {
+            #[cfg(feature = "ledger")]
+            {
+                Box::new(crate::ledger::official::OfficialApp {})
+            }
+            #[cfg(not(feature = "ledger"))]
+            {
+                Box::new(crate::ledger::mock::StubLedger::official())
+            }
+        }
+        HwKind::Software => Box::new(crate::ledger::mock::StubLedger::software()),
+    })
 }
 
+#[cfg(feature = "flutter")]
 #[frb]
 pub fn dummy_export(_a: SigningEvent) {}

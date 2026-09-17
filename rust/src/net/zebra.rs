@@ -12,7 +12,6 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use arti_client::TorClient;
 use httparse::Status;
 use reqwest::Url;
 use rustls::{pki_types::ServerName, ClientConfig, RootCertStore};
@@ -20,8 +19,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio_rustls::TlsConnector;
-use tor_rtcompat::PreferredRuntime;
 use webpki_roots::TLS_SERVER_ROOTS;
+use zcash_primitives::transaction::OrchardBundle;
 use zcash_primitives::{block::BlockHeader, transaction::Transaction};
 
 use byteorder::{ReadBytesExt, LE};
@@ -31,14 +30,13 @@ use zcash_protocol::consensus::{BlockHeight, BranchId};
 
 const COMPACT_NOTE_SIZE: usize = 52;
 
-use crate::{
-    IntoAnyhow, api::coin::{Network, TOR}, lwd::*, net::LwdServer
-};
+use crate::{api::coin::Network, lwd::*, net::LwdServer, IntoAnyhow};
 
 #[derive(Clone)]
 pub struct ZebraClient {
     url: String,
     client: reqwest::Client,
+    transport: u8,
 
     ssl: bool,
     host: String,
@@ -48,16 +46,17 @@ pub struct ZebraClient {
 }
 
 impl ZebraClient {
-    pub fn new(network: &Network, url: &str, proxy: &str) -> Result<Self> {
-        // Route Zebra (full node) JSON-RPC through the configured proxy when set.
+    pub fn new(network: &Network, url: &str, transport: u8, proxy: &str) -> Result<Self> {
+        // Direct/proxy Zebra JSON-RPC uses reqwest; the proxy applies only
+        // when the Proxy transport (3) is selected.
         // reqwest natively supports socks5/socks5h/http/https proxy URLs.
-        let client = if proxy.is_empty() {
-            reqwest::Client::new()
-        } else {
+        let client = if transport == 3 && !proxy.is_empty() {
             reqwest::Client::builder()
                 .proxy(reqwest::Proxy::all(proxy).anyhow()?)
                 .build()
                 .anyhow()?
+        } else {
+            reqwest::Client::new()
         };
 
         let url = Url::parse(url).anyhow()?;
@@ -82,6 +81,7 @@ impl ZebraClient {
         Ok(Self {
             url: url.to_string(),
             client,
+            transport,
             ssl,
             host: host.to_string(),
             port,
@@ -110,35 +110,47 @@ macro_rules! jsonrpc {
 }
 
 impl ZebraClient {
-    pub async fn jsonrpc_impl<R>(
-        &self,
-        req: Value,
-    ) -> Result<R>
+    pub async fn jsonrpc_impl<R>(&self, req: Value) -> Result<R>
     where
         R: for<'de> Deserialize<'de>,
     {
-        let rep = if let Some(tor_client) = TOR.get() {
-            let tor = &*tor_client.lock().await;
-            self.post_tor(tor, req).await?
-        } else {
-            let body: Value = self.client
-                .post(&self.url)
-                .json(&req)
-                .send()
-                .await?
-                .error_for_status()?
-                .json::<Value>()
-                .await?;
-            if let Some(error) = body.pointer("/error") {
-                if !error.is_null() {
-                    let msg = error
-                        .pointer("/message")
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("unknown error");
-                    anyhow::bail!("JSON RPC error: {}", msg);
-                }
+        let rep = match self.transport {
+            // Tor and Nym hand a raw stream to post_stream; Direct and
+            // Proxy keep the reqwest path.
+            1 => {
+                let tor_client = crate::api::coin::get_tor_client().await.lock().await;
+                let stream = tor_client.connect((self.host.clone(), self.port)).await?;
+                drop(tor_client);
+                self.post_stream(Box::pin(stream), req).await?
             }
-            body
+            #[cfg(feature = "nym")]
+            2 => {
+                let stream = crate::net::nym::nym_connect(&self.host, self.port).await?;
+                self.post_stream(Box::pin(stream), req).await?
+            }
+            #[cfg(not(feature = "nym"))]
+            2 => anyhow::bail!("Nym transport is not enabled in this build"),
+            _ => {
+                let body: Value = self
+                    .client
+                    .post(&self.url)
+                    .json(&req)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json::<Value>()
+                    .await?;
+                if let Some(error) = body.pointer("/error") {
+                    if !error.is_null() {
+                        let msg = error
+                            .pointer("/message")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("unknown error");
+                        anyhow::bail!("JSON RPC error: {}", msg);
+                    }
+                }
+                body
+            }
         };
         let result = rep
             .pointer("/result")
@@ -147,26 +159,21 @@ impl ZebraClient {
         Ok(res)
     }
 
-    pub async fn post_tor(
+    async fn post_stream(
         &self,
-        tor_client: &TorClient<PreferredRuntime>,
+        stream: Pin<Box<dyn AsyncRW + Send>>,
         req: Value,
     ) -> Result<Value> {
-        let connector = TlsConnector::from(self.tls_config.clone());
-
-        let host = self.host.clone();
-        let server_name: ServerName = host.clone().try_into().anyhow()?;
-
-        let stream = tor_client.connect((host, self.port)).await?;
-
         let mut stream: Pin<Box<dyn AsyncRW + Send>> = if self.ssl {
+            let connector = TlsConnector::from(self.tls_config.clone());
+            let server_name: ServerName = self.host.clone().try_into().anyhow()?;
             let tls_stream = connector
                 .connect(server_name, stream)
                 .await
-                .context("TLS handshake failed over Tor stream")?;
+                .context("TLS handshake failed over transport stream")?;
             Box::pin(tls_stream)
         } else {
-            Box::pin(stream)
+            stream
         };
 
         let request_json = req.to_string();
@@ -202,12 +209,7 @@ impl LwdServer for ZebraClient {
     }
 
     async fn block(&mut self, network: &Network, height: u32) -> Result<CompactBlock> {
-        let block_hex = jsonrpc!(
-            self,
-            "getblock",
-            [height.to_string(), 0],
-            String
-        )?;
+        let block_hex = jsonrpc!(self, "getblock", [height.to_string(), 0], String)?;
         let block_bytes = hex::decode(block_hex)
             .map_err(|e| anyhow::anyhow!("Failed to decode block hex: {}", e))?;
         let branch_id = BranchId::for_height(network, BlockHeight::from_u32(height));
@@ -217,12 +219,7 @@ impl LwdServer for ZebraClient {
 
     async fn post_transaction(&mut self, height: u32, tx: &[u8]) -> Result<String> {
         let tx_hex = hex::encode(tx);
-        let rep = jsonrpc!(
-            self,
-            "sendrawtransaction",
-            [tx_hex],
-            String
-        )?;
+        let rep = jsonrpc!(self, "sendrawtransaction", [tx_hex], String)?;
         Ok(rep)
     }
 
@@ -230,12 +227,7 @@ impl LwdServer for ZebraClient {
         let mut txid = txid.to_vec();
         txid.reverse();
         let tx_hex = hex::encode(txid);
-        let rep = jsonrpc!(
-            self,
-            "getrawtransaction",
-            [tx_hex, 1],
-            Value
-        )?;
+        let rep = jsonrpc!(self, "getrawtransaction", [tx_hex, 1], Value)?;
         let data = rep["hex"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Invalid response from node: No hex field"))?
@@ -319,12 +311,7 @@ impl LwdServer for ZebraClient {
     }
 
     async fn tree_state(&mut self, height: u32) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-        let res = jsonrpc!(
-            self,
-            "z_gettreestate",
-            [height.to_string()],
-            Value
-        )?;
+        let res = jsonrpc!(self, "z_gettreestate", [height.to_string()], Value)?;
         let sapling_tree = res["sapling"]["commitments"]["finalState"]
             .as_str()
             .ok_or_else(|| {
@@ -345,7 +332,11 @@ impl LwdServer for ZebraClient {
             .as_str()
             .unwrap_or("")
             .to_string();
-        Ok((hex::decode(sapling_tree)?, hex::decode(orchard_tree)?, hex::decode(&ironwood_tree).unwrap_or_default()))
+        Ok((
+            hex::decode(sapling_tree)?,
+            hex::decode(orchard_tree)?,
+            hex::decode(&ironwood_tree).unwrap_or_default(),
+        ))
     }
 }
 
@@ -389,7 +380,9 @@ pub fn parse_block(
             ($bundle:expr, $actions:expr) => {{
                 let bundle = $bundle;
                 for action in bundle.actions().iter() {
-                    let ciphertext = action.encrypted_note().enc_ciphertext.as_ref()[..COMPACT_NOTE_SIZE].to_vec();
+                    let ciphertext = action.encrypted_note().enc_ciphertext.as_ref()
+                        [..COMPACT_NOTE_SIZE]
+                        .to_vec();
                     $actions.push(CompactOrchardAction {
                         nullifier: action.nullifier().to_bytes().to_vec(),
                         cmx: action.cmx().to_bytes().to_vec(),
@@ -401,7 +394,12 @@ pub fn parse_block(
         }
         let mut actions = vec![];
         if let Some(orchard_bundle) = tx_data.orchard_bundle() {
-            push_actions!(orchard_bundle, actions);
+            match orchard_bundle {
+                OrchardBundle::OrchardVanilla(b) => push_actions!(b, actions),
+                OrchardBundle::OrchardZSA(_b) => {
+                    // TODO: ZSA compact action extraction
+                }
+            }
         }
         let mut ironwood_actions = vec![];
         if let Some(ironwood_bundle) = tx_data.ironwood_bundle() {
@@ -457,15 +455,22 @@ pub fn parse_block(
 }
 
 pub fn read_compact_u32<R: Read>(mut reader: R) -> Result<u32> {
-    let tpe = reader.read_u8().map_err(|e| anyhow::anyhow!("Failed to read compact u32 type: {}", e))?;
+    let tpe = reader
+        .read_u8()
+        .map_err(|e| anyhow::anyhow!("Failed to read compact u32 type: {}", e))?;
     if tpe < 0xFD {
         return Ok(tpe as u32);
     }
     if tpe == 0xFD {
-        return Ok(reader.read_u16::<LE>().map_err(|e| anyhow::anyhow!("Failed to read compact u16: {}", e))? as u32);
+        return Ok(reader
+            .read_u16::<LE>()
+            .map_err(|e| anyhow::anyhow!("Failed to read compact u16: {}", e))?
+            as u32);
     }
     if tpe == 0xFE {
-        return reader.read_u32::<LE>().map_err(|e| anyhow::anyhow!("Failed to read compact u32: {}", e));
+        return reader
+            .read_u32::<LE>()
+            .map_err(|e| anyhow::anyhow!("Failed to read compact u32: {}", e));
     }
     anyhow::bail!("Invalid compact u32 type: {tpe}");
 }

@@ -4,7 +4,7 @@ description: "Zkool"
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 
-version: 6.24.0  # x-release-please-version
+version: 6.30.0  # x-release-please-version
 
 environment:
   sdk: ^3.6.1
@@ -18,7 +18,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   rlz:
     path: rust_builder
-  flutter_rust_bridge: 2.11.1
+  flutter_rust_bridge: 2.12.0
 
   logger: ^2.0.2+1
   go_router: ^14.8.1
@@ -44,7 +44,7 @@ dependencies:
 
   flutter_svg: ^2.0.10+1
 
-  fixed: ^5.3.3
+  fixed: ^6.2.0
   decimal: ^3.2.1
   intl: ^0.20.2
 
@@ -78,6 +78,8 @@ dependencies:
 
 dev_dependencies:
   flutter_test:
+    sdk: flutter
+  integration_test:
     sdk: flutter
 
   flutter_lints: ^5.0.0

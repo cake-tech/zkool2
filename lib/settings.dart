@@ -5,7 +5,6 @@ import 'package:flutter_passkey_service/pigeons/messages.g.dart' show PasskeyExc
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_form_builder/flutter_form_builder.dart';
-import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:form_builder_validators/form_builder_validators.dart';
 import 'package:gap/gap.dart';
@@ -14,8 +13,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:zkool/router.dart';
-import 'package:zkool/src/rust/api/coin.dart';
-import 'package:zkool/src/rust/api/db.dart';
+import 'package:zkool/src/rust/api/network.dart' show isValidNymUrl;
 import 'package:zkool/src/rust/api/init.dart';
 import 'package:zkool/src/rust/api/sapling.dart';
 import 'package:zkool/src/rust/api/sync.dart';
@@ -35,7 +33,6 @@ class SettingsPage extends ConsumerStatefulWidget {
 }
 
 class SettingsPageState extends ConsumerState<SettingsPage> with RouteAware {
-  late Coin c = coinContext.coin;
   AppSettings? settings;
 
   @override
@@ -61,38 +58,19 @@ class SettingsPageState extends ConsumerState<SettingsPage> with RouteAware {
     if (settings == null) return blank(context);
     return SettingsForm(
       settings!,
-      onChanged: (settings) async {
-        final prefs = SharedPreferencesAsync();
-        await prefs.setString("database", settings.dbName);
-        await putProp(key: "is_light_node", value: settings.isLightNode.toString(), c: c);
-        await putProp(key: "lwd", value: settings.lwd, c: c);
-        await putProp(key: "block_explorer", value: settings.blockExplorer, c: c);
-        await putProp(key: "actions_per_sync", value: settings.actionsPerSync, c: c);
-        await putProp(key: "sync_interval", value: settings.syncInterval, c: c);
-        await prefs.setBool("pin_lock", settings.needPin);
-        await prefs.setBool("offline", settings.offline);
-        await prefs.setBool("use_tor", settings.useTor);
-        await putProp(key: "proxy", value: settings.proxy, c: c);
-        await prefs.setBool("get_fx", settings.getFx);
-        await prefs.setString("coingecko", settings.coingecko);
-        await putProp(key: "qr_enabled", value: settings.qrSettings.enabled.toString(), c: c);
-        await putProp(key: "qr_size", value: settings.qrSettings.size.toString(), c: c);
-        await putProp(key: "qr_ecLevel", value: settings.qrSettings.ecLevel.toString(), c: c);
-        await putProp(key: "qr_delay", value: settings.qrSettings.delay.toString(), c: c);
-        await putProp(key: "qr_repair", value: settings.qrSettings.repair.toString(), c: c);
-        c = c.setLwd(url: settings.lwd, serverType: settings.isLightNode ? 0 : 1);
-        c = await c.setUseTor(useTor: settings.useTor);
-        c = c.setProxy(proxy: settings.proxy);
-        await prefs.setBool("vault", settings.vault);
-        await prefs.setBool("expert_mode", settings.expertMode);
-        await prefs.setString("palette_name", settings.paletteName);
-        await prefs.setBool("dark_mode", settings.darkMode);
-        await putProp(key: "currency", value: settings.currency, c: c);
-        coinContext.set(coin: c);
-        ref.read(priceProvider.notifier).setAutoFetchFx(settings.getFx, settings.coingecko, settings.currency);
-        ref.invalidate(appSettingsProvider);
-      },
+      // Keep a snapshot of the latest edits; the changes are applied only
+      // when leaving this page (see didPop), matching the sub-page pattern.
+      onChanged: (settings) => this.settings = settings,
     );
+  }
+
+  @override
+  void didPop() {
+    super.didPop();
+    final s = settings;
+    if (s != null) {
+      ref.read(appSettingsProvider.notifier).save(s);
+    }
   }
 }
 
@@ -190,42 +168,95 @@ class SettingsFormState extends ConsumerState<SettingsForm> {
                     ],
                   ),
                 ),
-                Row(
-                  children: [
-                    IconButton.outlined(
-                      tooltip: settings.useTor ? "Disable Arti Tor" : "Enable Arti Tor (embedded Tor client)",
-                      onPressed: onToggleTor,
-                      icon: SvgPicture.asset(
-                        "assets/tor.svg",
-                        width: 22,
-                        height: 22,
-                        colorFilter: ColorFilter.mode(
-                          settings.useTor ? Colors.green : Theme.of(context).colorScheme.primary,
-                          BlendMode.srcIn,
-                        ),
+                Tooltip(
+                  message: "Network transport: connect directly, through the embedded "
+                      "Tor (Arti) client, through the Nym mixnet, or via an external proxy",
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerLeft,
+                      child: SegmentedButton<int>(
+                        segments: const [
+                          ButtonSegment(value: 0, label: Text("Direct")),
+                          ButtonSegment(value: 1, label: Text("Tor")),
+                          ButtonSegment(value: 2, label: Text("Nym")),
+                          ButtonSegment(value: 3, label: Text("Proxy")),
+                        ],
+                        selected: {isNymServer ? 0 : settings.transport},
+                        onSelectionChanged: isNymServer ? null : onChangedTransport,
                       ),
                     ),
-                    const Gap(4),
-                    Text(settings.useTor ? "Arti Tor enabled" : "Arti Tor disabled"),
-                    const Gap(24),
-                    Expanded(
-                      child: Tooltip(
-                        message: "Route connections through an external proxy. "
-                            "Supports socks5://, socks5h://, http:// and https://. "
-                            "Disabled when Arti Tor is enabled.",
-                        child: FormBuilderTextField(
-                          name: "proxy",
-                          decoration: const InputDecoration(
-                            labelText: "HTTP / SOCKS5 Proxy",
-                            hintText: "socks5h://127.0.0.1:9050",
+                  ),
+                ),
+                if (isNymServer)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Row(
+                      children: [
+                        Icon(Icons.info_outline, size: 16, color: Theme.of(context).colorScheme.tertiary),
+                        const Gap(8),
+                        Expanded(
+                          child: Text(
+                            "Nym service address: traffic is routed natively through the "
+                            "Nym mixnet. Transport selection is disabled.",
+                            style: Theme.of(context).textTheme.bodySmall,
                           ),
-                          initialValue: settings.proxy,
-                          enabled: !settings.useTor,
-                          onChanged: onChangedProxy,
+                        ),
+                      ],
+                    ),
+                  ),
+                Tooltip(
+                  message: "Route connections through an external proxy. "
+                      "Supports socks5://, socks5h://, http:// and https://. "
+                      "Used when the Proxy transport is selected.",
+                  child: FormBuilderTextField(
+                    name: "proxy",
+                    decoration: const InputDecoration(
+                      labelText: "HTTP / SOCKS5 Proxy",
+                      hintText: "socks5h://127.0.0.1:9050",
+                    ),
+                    initialValue: settings.proxy,
+                    enabled: !isNymServer && settings.transport == 3,
+                    onChanged: onChangedProxy,
+                  ),
+                ),
+                Tooltip(
+                  message: "URL of the voting config source. The wallet fetches "
+                      "and authenticates the static config, then the dynamic "
+                      "config it points to, and caches the resolved result.",
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: FormBuilderTextField(
+                          name: "voting_config_url",
+                          decoration: const InputDecoration(
+                            labelText: "Voting Config URL",
+                            hintText: "https://…/voting-config.json",
+                          ),
+                          initialValue: settings.votingConfigUrl,
+                          onChanged: onChangedVotingConfigUrl,
                         ),
                       ),
+                      IconButton(
+                        icon: const Icon(Icons.refresh),
+                        onPressed: () => _fetchVotingConfig(context),
+                      ),
+                    ],
+                  ),
+                ),
+                Tooltip(
+                  message: "URL of the vote commitment tree node used for "
+                      "VAN witness sync before casting votes.",
+                  child: FormBuilderTextField(
+                    name: "vote_node_url",
+                    decoration: const InputDecoration(
+                      labelText: "Vote Node URL",
+                      hintText: "https://…/vote-node",
                     ),
-                  ],
+                    initialValue: settings.voteNodeUrl,
+                    onChanged: onChangedVoteNodeUrl,
+                  ),
                 ),
                 Tooltip(
                   message: "Number actions per synchronization chunk",
@@ -370,8 +401,7 @@ class SettingsFormState extends ConsumerState<SettingsForm> {
                         Text("Downloaded", style: TextStyle(color: Colors.green)),
                       ])
                     else ...[
-                      Text("Not Downloaded",
-                          style: TextStyle(color: Colors.orange.shade700)),
+                      Text("Not Downloaded", style: TextStyle(color: Colors.orange.shade700)),
                       Gap(8),
                       if (saplingDownloading)
                         SizedBox(
@@ -448,10 +478,18 @@ class SettingsFormState extends ConsumerState<SettingsForm> {
     });
   }
 
+  /// Mixnet-native server address (nym:// URL): the mixnet is the
+  /// transport, so the transport selector is forced to Direct.
+  bool get isNymServer => isValidNymUrl(url: settings.lwd);
+
   void onChangedLWD(String? value) async {
     if (value == null) return;
     setState(() {
-      settings = settings.copyWith(lwd: value);
+      settings = settings.copyWith(
+        lwd: value,
+        // Force Direct when a Nym service address is entered.
+        transport: isValidNymUrl(url: value) ? 0 : settings.transport,
+      );
       widget.onChanged(settings);
     });
   }
@@ -488,9 +526,47 @@ class SettingsFormState extends ConsumerState<SettingsForm> {
     });
   }
 
-  void onToggleTor() async {
+  void onChangedVotingConfigUrl(String? value) async {
+    if (value == null) return;
     setState(() {
-      settings = settings.copyWith(useTor: !settings.useTor);
+      settings = settings.copyWith(votingConfigUrl: value);
+      widget.onChanged(settings);
+    });
+  }
+
+  void onChangedVoteNodeUrl(String? value) async {
+    if (value == null) return;
+    setState(() {
+      settings = settings.copyWith(voteNodeUrl: value);
+      widget.onChanged(settings);
+    });
+  }
+
+  Future<void> _fetchVotingConfig(BuildContext context) async {
+    try {
+      final config = await ref
+          .read(votingConfigProvider.notifier)
+          .resolve(source: settings.votingConfigUrl);
+      if (!context.mounted) return;
+      if (config == null) {
+        await showMessage(
+          context,
+          "No voting config source configured. Enter a URL first.",
+        );
+        return;
+      }
+      showSnackbar(
+        "Voting config resolved: ${config.rounds.length} round(s), "
+        "switch ${config.switchKind}",
+      );
+    } on AnyhowException catch (e) {
+      if (context.mounted) await showException(context, e.message);
+    }
+  }
+
+  void onChangedTransport(Set<int> selection) {
+    setState(() {
+      settings = settings.copyWith(transport: selection.first);
       widget.onChanged(settings);
     });
   }
@@ -723,6 +799,14 @@ class SettingsFormState extends ConsumerState<SettingsForm> {
         if (mounted) await showException(context, "Passkey error: ${e.message}");
         return;
       }
+    } else {
+      // Vault is deactivating: sign out of Google so the next enable
+      // shows the account picker (allows switching to a different user).
+      try {
+        await ref.read(vaultProvider.notifier).signOut();
+      } catch (e) {
+        logger.w("[Vault] disable: signOut failed: $e");
+      }
     }
     setState(() {
       settings = settings.copyWith(vault: value);
@@ -847,7 +931,7 @@ class SettingsFormState extends ConsumerState<SettingsForm> {
               folder: "",
               useInternal: ra.useInternal,
               internal: false,
-              ledger: false,
+              hw: 0,
             ),
             c: coin,
           );
@@ -873,11 +957,11 @@ class SettingsFormState extends ConsumerState<SettingsForm> {
             } else {
               prf = await authenticatePasskey();
             }
-            if (prf != null && mounted) {
+            if (mounted) {
               await ref.read(vaultProvider.notifier).registerDevice(
-                password: masterPassword!,
-                prf: prf,
-              );
+                    password: masterPassword!,
+                    prf: prf,
+                  );
             }
           } catch (e) {
             logger.w("[Recover] passkey registration failed: $e");
@@ -904,7 +988,7 @@ class SettingsFormState extends ConsumerState<SettingsForm> {
         await showException(
           context,
           "The local database must be empty before compressing the vault. "
-              "Please delete all accounts first.",
+          "Please delete all accounts first.",
         );
       }
       return;
@@ -924,12 +1008,8 @@ class SettingsFormState extends ConsumerState<SettingsForm> {
     List<RestoredAccount> recovered;
     AwesomeDialog? compressLoading = showLoadingDialog(context, "Downloading vault...");
     try {
-      vaultBytes = await ref
-          .read(vaultProvider.notifier)
-          .downloadVaultBytes();
-      recovered = await ref
-          .read(vaultProvider.notifier)
-          .recoverVault(vaultBytes: vaultBytes, masterPassword: password);
+      vaultBytes = await ref.read(vaultProvider.notifier).downloadVaultBytes();
+      recovered = await ref.read(vaultProvider.notifier).recoverVault(vaultBytes: vaultBytes, masterPassword: password);
       compressLoading.dismiss();
     } catch (e) {
       compressLoading.dismiss();
@@ -969,8 +1049,7 @@ class SettingsFormState extends ConsumerState<SettingsForm> {
     final switchAccount = await confirmDialog(
       context,
       title: "Switch Google Account?",
-      message:
-          "Do you want to create the new vault on a different Google account?",
+      message: "Do you want to create the new vault on a different Google account?",
     );
     if (!mounted) return;
 
@@ -1012,7 +1091,7 @@ class SettingsFormState extends ConsumerState<SettingsForm> {
             folder: "",
             useInternal: ra.useInternal,
             internal: false,
-            ledger: false,
+            hw: 0,
           ),
           c: coin,
         );
@@ -1051,10 +1130,12 @@ class SettingsFormState extends ConsumerState<SettingsForm> {
       settings = settings.copyWith(syncInterval: value);
       widget.onChanged(settings);
     });
-    // Restart autoSync if the interval was changed to a positive value
+    // Restart autoSync if the interval was changed to a positive value. Pass
+    // the new interval explicitly: the appSettingsProvider still holds the
+    // previously saved value until the page is left.
     final interval = int.tryParse(value) ?? 0;
     if (interval > 0) {
-      ref.read(synchronizerProvider.notifier).autoSync();
+      ref.read(synchronizerProvider.notifier).autoSync(interval: interval);
     }
   }
 

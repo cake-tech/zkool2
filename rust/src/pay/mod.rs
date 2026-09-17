@@ -1,12 +1,22 @@
+use std::collections::BTreeMap;
+
 use crate::{api::pay::PcztPackage, Client};
 
 use crate::api::coin::Network;
 use anyhow::Result;
+use orchard::note::AssetBase;
 use pczt::{roles::verifier::Verifier, Pczt};
 use pool::PoolMask;
 use serde::{Deserialize, Serialize};
+use sqlx::SqliteConnection;
 use tracing::{info, span, Level};
-use zcash_keys::encoding::AddressCodec as _;
+use zcash_keys::{
+    address::UnifiedAddress,
+    encoding::AddressCodec as _,
+};
+use zcash_note_encryption::Domain;
+use zcash_primitives::transaction::{OrchardBundle, Transaction};
+use zcash_protocol::consensus::BranchId;
 use zcash_transparent::address::TransparentAddress;
 
 pub mod error;
@@ -125,15 +135,96 @@ pub struct TxPlan {
     pub can_broadcast: bool,
 }
 
+fn orchard_asset_name(proprietary: &BTreeMap<String, Vec<u8>>, asset: Option<AssetBase>) -> String {
+    proprietary
+        .get("asset_name")
+        .and_then(|value| String::from_utf8(value.clone()).ok())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| match asset {
+            Some(asset) if asset != AssetBase::zatoshi() => hex::encode(&asset.to_bytes()[..8]),
+            _ => "ZEC".to_string(),
+        })
+}
+
+/// The user-facing address of a shielded PCZT output: the user address set by
+/// the planner when present, otherwise the raw recipient encoded on its own
+/// (an orchard-only unified address, or the sapling payment address).
+fn shielded_output_address(
+    network: &Network,
+    user_address: Option<&String>,
+    recipient: Option<UnifiedAddress>,
+) -> Result<String> {
+    if let Some(address) = user_address.filter(|address| !address.is_empty()) {
+        return Ok(address.clone());
+    }
+    recipient
+        .map(|address| address.encode(network))
+        .ok_or_else(|| anyhow::anyhow!("shielded PCZT output has no recipient"))
+}
+
+fn append_orchard_plan<D: Domain>(
+    network: &Network,
+    bundle: &orchard::pczt::Bundle<D>,
+    inputs: &mut Vec<TxPlanIn>,
+    outputs: &mut Vec<TxPlanOut>,
+    fee: &mut i64,
+) -> Result<()> {
+    for action in bundle.actions() {
+        let output_asset_name =
+            orchard_asset_name(action.output().proprietary(), action.output().asset());
+        // A ZIP-226 split spend is a proof-level padding action derived from
+        // an existing ZSA note, not another wallet input. Showing it here
+        // duplicates the source note in the human-readable transaction plan.
+        if action.spend().rseed_split_note().is_none() {
+            inputs.push(TxPlanIn {
+                pool: 2,
+                amount: action.spend().value().map(|value| value.inner()),
+                asset_name: orchard_asset_name(
+                    action.spend().proprietary(),
+                    action.spend().asset(),
+                ),
+            });
+        }
+        outputs.push(TxPlanOut {
+            pool: 2,
+            amount: action
+                .output()
+                .value()
+                .ok_or_else(|| anyhow::anyhow!("Orchard PCZT output is missing its value"))?
+                .inner(),
+            address: shielded_output_address(
+                network,
+                action.output().user_address().as_ref(),
+                action
+                    .output()
+                    .recipient()
+                    .as_ref()
+                    .and_then(|recipient| {
+                        UnifiedAddress::from_receivers(Some(*recipient), None, None)
+                    }),
+            )?,
+            asset_name: output_asset_name,
+        });
+    }
+    let value_sum: i64 = (*bundle.value_sum())
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("Orchard PCZT value sum exceeds i64"))?;
+    *fee += value_sum;
+    Ok(())
+}
+
 impl TxPlan {
     pub fn from_package(network: &Network, package: &PcztPackage) -> Result<Self> {
         let mut inputs = vec![];
         let mut outputs = vec![];
 
-        let pczt = Pczt::parse(&package.pczt).unwrap();
+        let pczt = Pczt::parse(&package.pczt)
+            .map_err(|error| anyhow::anyhow!("Failed to parse PCZT: {error:?}"))?;
+        let is_zsa = BranchId::try_from(*pczt.global().consensus_branch_id())
+            .is_ok_and(|branch_id| branch_id == BranchId::Nu7);
         let height = *pczt.global().expiry_height();
-        let verifier = Verifier::new(pczt);
         let mut fee = 0i64;
+        let verifier = Verifier::new(pczt);
 
         let verifier = verifier
             .with_transparent(|bundle| {
@@ -174,7 +265,13 @@ impl TxPlan {
                     outputs.push(TxPlanOut {
                         pool: 1,
                         amount: o.value().unwrap().inner(),
-                        address: o.user_address().as_ref().cloned().unwrap_or_default(),
+                        address: match o.user_address().as_ref() {
+                            Some(address) if !address.is_empty() => address.clone(),
+                            _ => o
+                                .recipient()
+                                .map(|recipient| recipient.encode(network))
+                                .unwrap_or_default(),
+                        },
                         asset_name: "ZEC".to_string(),
                     });
                 }
@@ -183,43 +280,18 @@ impl TxPlan {
             })
             .unwrap();
 
-        let verifier = verifier
-            .with_orchard(|bundle| {
-                for a in bundle.actions().iter() {
-                    let input_asset_name = a
-                        .spend()
-                        .proprietary()
-                        .get("asset_name")
-                        .and_then(|v| String::from_utf8(v.clone()).ok())
-                        .unwrap_or_else(|| "ZEC".to_string());
-                    let output_asset_name = a
-                        .output()
-                        .proprietary()
-                        .get("asset_name")
-                        .and_then(|v| String::from_utf8(v.clone()).ok())
-                        .unwrap_or_else(|| "ZEC".to_string());
-                    inputs.push(TxPlanIn {
-                        pool: 2,
-                        amount: a.spend().value().map(|v| v.inner()),
-                        asset_name: input_asset_name,
-                    });
-                    outputs.push(TxPlanOut {
-                        pool: 2,
-                        amount: a.output().value().expect("value").inner(),
-                        address: a
-                            .output()
-                            .user_address()
-                            .as_ref()
-                            .cloned()
-                            .unwrap_or_default(),
-                        asset_name: output_asset_name,
-                    });
-                }
-                let f: i64 = (*bundle.value_sum()).try_into().unwrap();
-                fee += f;
-                Ok::<_, pczt::roles::verifier::OrchardError<()>>(())
+        let verifier = if is_zsa {
+            verifier.with_orchard_zsa(|bundle| {
+                append_orchard_plan(network, bundle, &mut inputs, &mut outputs, &mut fee)
+                    .map_err(pczt::roles::verifier::OrchardError::Custom)
             })
-            .unwrap();
+        } else {
+            verifier.with_orchard(|bundle| {
+                append_orchard_plan(network, bundle, &mut inputs, &mut outputs, &mut fee)
+                    .map_err(pczt::roles::verifier::OrchardError::Custom)
+            })
+        }
+        .map_err(|error| anyhow::anyhow!("Failed to verify Orchard PCZT: {error:?}"))?;
 
         let _verifier = verifier
             .with_ironwood(|bundle| {
@@ -233,18 +305,20 @@ impl TxPlan {
                     outputs.push(TxPlanOut {
                         pool: 3,
                         amount: a.output().value().expect("value").inner(),
-                        address: a
-                            .output()
-                            .user_address()
-                            .as_ref()
-                            .cloned()
-                            .unwrap_or_default(),
+                        address: shielded_output_address(
+                            network,
+                            a.output().user_address().as_ref(),
+                            a.output().recipient().as_ref().and_then(|recipient| {
+                                UnifiedAddress::from_receivers(Some(*recipient), None, None)
+                            }),
+                        )
+                        .map_err(pczt::roles::verifier::OrchardError::Custom)?,
                         asset_name: "ZEC".to_string(),
                     });
                 }
                 let f: i64 = (*bundle.value_sum()).try_into().unwrap();
                 fee += f;
-                Ok::<_, pczt::roles::verifier::OrchardError<()>>(())
+                Ok::<_, pczt::roles::verifier::OrchardError<anyhow::Error>>(())
             })
             .unwrap();
 
@@ -281,4 +355,79 @@ pub async fn send(client: &mut Client, height: u32, data: &[u8]) -> Result<Strin
         info!("TXID: {}", txid);
     });
     Ok(txid)
+}
+
+/// After a successful broadcast, mark the notes the transaction spends as
+/// `locked` so note selection will not pick them again until the spend is mined
+/// and synced (which clears the flag — see the spend handlers in `sync.rs`).
+///
+/// This closes the window where a second transaction is built from a note that
+/// an earlier, still-unmined broadcast already spent — the "duplicate nullifier"
+/// the node would otherwise reject (seen in rapid-fire DKG funding rounds).
+///
+/// Best-effort: a transaction we cannot parse simply locks nothing, and it never
+/// fails a broadcast that already succeeded. Nullifiers are matched against
+/// `notes.nullifier` exactly as [`crate::mempool::decode_raw_transaction`] does,
+/// which already covers every pool including ironwood.
+pub async fn lock_spent_notes(
+    conn: &mut SqliteConnection,
+    account: u32,
+    tx_bytes: &[u8],
+) -> Result<()> {
+    let Some(tx) = [
+        BranchId::Nu6_3,
+        BranchId::Nu6_2,
+        BranchId::Nu6,
+        BranchId::Nu5,
+    ]
+    .into_iter()
+    .find_map(|branch| Transaction::read(&mut &tx_bytes[..], branch).ok()) else {
+        info!("lock_spent_notes: could not parse transaction; locking nothing");
+        return Ok(());
+    };
+    let tx_data = tx.into_data();
+
+    // Every input's key (transparent outpoint or shielded nullifier) is stored
+    // in the `nullifier` column, so collect them all and lock the matches.
+    let mut nullifiers: Vec<Vec<u8>> = vec![];
+    if let Some(tbundle) = tx_data.transparent_bundle() {
+        for v in tbundle.vin.iter() {
+            let mut nf = vec![];
+            v.prevout().write(&mut nf)?;
+            nullifiers.push(nf);
+        }
+    }
+    if let Some(sbundle) = tx_data.sapling_bundle() {
+        for v in sbundle.shielded_spends().iter() {
+            nullifiers.push(v.nullifier().to_vec());
+        }
+    }
+    if let Some(obundle) = tx_data.orchard_bundle() {
+        match obundle {
+            OrchardBundle::OrchardVanilla(b) => {
+                for v in b.actions().iter() {
+                    nullifiers.push(v.nullifier().to_bytes().to_vec());
+                }
+            }
+            OrchardBundle::OrchardZSA(b) => {
+                for v in b.actions().iter() {
+                    nullifiers.push(v.nullifier().to_bytes().to_vec());
+                }
+            }
+        }
+    }
+    if let Some(iwbundle) = tx_data.ironwood_bundle() {
+        for v in iwbundle.actions().iter() {
+            nullifiers.push(v.nullifier().to_bytes().to_vec());
+        }
+    }
+
+    for nf in nullifiers.iter() {
+        sqlx::query("UPDATE notes SET locked = TRUE WHERE account = ? AND nullifier = ?")
+            .bind(account)
+            .bind(nf)
+            .execute(&mut *conn)
+            .await?;
+    }
+    Ok(())
 }

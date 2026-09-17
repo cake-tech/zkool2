@@ -22,6 +22,7 @@ import 'package:zkool/src/rust/api/sync.dart';
 import 'package:zkool/src/rust/api/zsa.dart';
 import 'package:zkool/src/rust/pay.dart';
 import 'package:zkool/store.dart';
+import 'package:zkool/transfer.dart';
 import 'package:zkool/utils.dart';
 import 'package:zkool/widgets/error_display.dart';
 import 'package:zkool/address_resolver.dart';
@@ -106,9 +107,7 @@ class SendPageState extends ConsumerState<SendPage> {
         .mapIndexed(
           (i, r) => ListTile(
             title: Text(r.address),
-            subtitle: r.assetBase.every((b) => b == 0)
-                ? zatToText(r.amount, selectable: false)
-                : Text("${r.amount} ${r.assetName!}"),
+            subtitle: r.assetBase.every((b) => b == 0) ? zatToText(r.amount, selectable: false) : Text("${r.amount} ${r.assetName!}"),
             trailing: IconButton(
               icon: Icon(Icons.delete),
               onPressed: () {
@@ -310,22 +309,11 @@ class SendPageState extends ConsumerState<SendPage> {
       if (!confirmed) return;
     }
     try {
-      final options = PaymentOptions(
-        srcPools: 1, // Only the transparent pool (mask)
-        recipientPaysFee: true,
-        smartTransparent: smartTransparent,
-        mode: 0,
-      );
-      final pczt = await prepare(
-        recipients: [
-          Recipient(
-            address: addresses?.oaddr ?? addresses?.saddr ?? "", // Shield to Orchard or Sapling address
-            amount: pbalance?.field0[0] ?? BigInt.zero,
-            assetBase: zecBase,
-          ),
-        ],
-        options: options,
+      final pczt = await transferAllBetweenPools(
         c: c,
+        sourcePools: 1,
+        destinationAddress: addresses?.oaddr ?? addresses?.saddr ?? "",
+        smartTransparent: smartTransparent,
       );
 
       GoRouter.of(navigatorKey.currentContext!).go("/tx", extra: pczt);
@@ -336,18 +324,10 @@ class SendPageState extends ConsumerState<SendPage> {
 
   void onUnshield() async {
     try {
-      final options = PaymentOptions(
-        srcPools: 6, // Only the sapling and orchard pool (mask)
-        recipientPaysFee: true,
-        smartTransparent: false,
-        mode: 0,
-      );
-      final pczt = await prepare(
-        recipients: [
-          Recipient(address: addresses?.taddr ?? "", amount: (pbalance?.field0[1] ?? BigInt.zero) + (pbalance?.field0[2] ?? BigInt.zero), assetBase: zecBase)
-        ],
-        options: options,
+      final pczt = await transferAllBetweenPools(
         c: c,
+        sourcePools: 14, // Sapling | Orchard | Ironwood
+        destinationAddress: addresses?.taddr ?? "",
       );
 
       GoRouter.of(navigatorKey.currentContext!).go("/tx", extra: pczt);
@@ -690,8 +670,6 @@ class Send2PageState extends ConsumerState<Send2Page> {
   late final hasTex = widget.recipients.any((r) => isTexAddress(address: r.address, c: c));
   late final hasZsa = widget.recipients.any((r) => !r.assetBase.every((b) => b == 0));
   late var recipientPaysFee = widget.recipientPaysFee;
-  /// 0 = fee optimisation, 1 = privacy preservation.
-  var coinSelectionMode = 1;
   int? category;
   var puri = "";
   AccountData? account;
@@ -763,18 +741,6 @@ class Send2PageState extends ConsumerState<Send2Page> {
                     title: Text("Recipient Pays Fee"),
                     initialValue: widget.recipientPaysFee,
                     onChanged: (v) => setState(() => recipientPaysFee = v!),
-                  ),
-                ),
-                Tooltip(
-                  message: "Fee optimisation picks notes to minimise transaction fees. "
-                      "Privacy preservation picks notes to minimise cross-pool transfers, "
-                      "keeping value within the same shielded pool.",
-                  child: FormBuilderSwitch(
-                    name: "privacyMode",
-                    title: Text("Privacy Preservation"),
-                    initialValue: coinSelectionMode == 1,
-                    onChanged: (v) =>
-                        setState(() => coinSelectionMode = (v ?? false) ? 1 : 0),
                   ),
                 ),
                 Tooltip(
@@ -866,7 +832,7 @@ class Send2PageState extends ConsumerState<Send2Page> {
       }
     }
 
-    final srcPools = form.fields['source pools']?.value ?? (hasTex ? 1 : 15);
+    final srcPools = hasTex ? 1 : (form.fields['source pools']?.value ?? 15);
 
     try {
       final options = PaymentOptions(
@@ -874,7 +840,6 @@ class Send2PageState extends ConsumerState<Send2Page> {
         recipientPaysFee: recipientPaysFee,
         smartTransparent: false,
         category: category,
-        mode: coinSelectionMode,
       );
       final pczt = await prepare(
         recipients: widget.recipients,

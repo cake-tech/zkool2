@@ -1,11 +1,11 @@
 use std::fs::File;
 
+use crate::keys::{SaplingDiversifiedAddress, ScopeExt};
 use anyhow::{anyhow, Result};
 use csv_async::AsyncWriter;
 use futures::TryStreamExt;
 use orchard::keys::{FullViewingKey, SpendingKey};
 use sapling_crypto::PaymentAddress;
-use crate::keys::{SaplingDiversifiedAddress, ScopeExt};
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteRow},
     Column, Connection, Row, SqliteConnection, TypeInfo,
@@ -25,7 +25,7 @@ use crate::api::account::{Account, Memo, Tx};
 use crate::api::coin::Network;
 use crate::api::sync::PoolBalance;
 use crate::sync::BlockHeader;
-use crate::{api::account::TxNote, tiu};
+use crate::api::account::TxNote;
 
 /// Schema version. Bump only when the export format changes (IOAccount or any
 /// embedded struct gains/removes/changes a field). Do NOT bump for runtime-only
@@ -256,25 +256,20 @@ pub async fn create_schema(connection: &mut SqliteConnection) -> Result<()> {
     .await?;
 
     // Migration: add id_asset to notes for ZSA note→asset linking
-    let _ = sqlx::query(
-        "ALTER TABLE notes ADD COLUMN id_asset INTEGER REFERENCES assets(id_asset)",
-    )
-    .execute(&mut *connection)
-    .await;
+    let _ =
+        sqlx::query("ALTER TABLE notes ADD COLUMN id_asset INTEGER REFERENCES assets(id_asset)")
+            .execute(&mut *connection)
+            .await;
 
     // Migration: add diversifier_index to notes for per-address shielded tx counts
-    let _ = sqlx::query(
-        "ALTER TABLE notes ADD COLUMN diversifier_index INTEGER",
-    )
-    .execute(&mut *connection)
-    .await;
+    let _ = sqlx::query("ALTER TABLE notes ADD COLUMN diversifier_index INTEGER")
+        .execute(&mut *connection)
+        .await;
 
     // Migration: add asset_name to assets for human-readable naming
-    let _ = sqlx::query(
-        "ALTER TABLE assets ADD COLUMN asset_name TEXT",
-    )
-    .execute(&mut *connection)
-    .await;
+    let _ = sqlx::query("ALTER TABLE assets ADD COLUMN asset_name TEXT")
+        .execute(&mut *connection)
+        .await;
 
     // Migration: ensure asset_base is unique to prevent duplicate note inserts
     // caused by duplicate issuances with the same asset_base.
@@ -398,9 +393,11 @@ pub async fn create_schema(connection: &mut SqliteConnection) -> Result<()> {
     let _ = sqlx::query("ALTER TABLE transactions ADD COLUMN zsa_value INTEGER NOT NULL DEFAULT 0")
         .execute(&mut *connection)
         .await;
-    let _ = sqlx::query("ALTER TABLE transactions ADD COLUMN asset_id INTEGER REFERENCES assets(id_asset)")
-        .execute(&mut *connection)
-        .await;
+    let _ = sqlx::query(
+        "ALTER TABLE transactions ADD COLUMN asset_id INTEGER REFERENCES assets(id_asset)",
+    )
+    .execute(&mut *connection)
+    .await;
     if sqlx::query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='categories'")
         .fetch_optional(&mut *connection)
         .await?
@@ -571,6 +568,14 @@ pub async fn create_schema(connection: &mut SqliteConnection) -> Result<()> {
     .execute(&mut *connection)
     .await?;
 
+    // DKG publish intent: the outgoing package(s) of the round being
+    // published, staged before the broadcast and cleared after it. NULL means
+    // nothing pending (or already sent under an older build). Added without a
+    // DB_VERSION bump: nullable, only read by new code, older builds ignore it.
+    let _ = sqlx::query("ALTER TABLE dkg_state ADD COLUMN pending_publish BLOB")
+        .execute(&mut *connection)
+        .await;
+
     let version = get_prop(connection, "version").await?;
     match version {
         Some(version) if version.parse::<u16>()? > DB_VERSION => {
@@ -588,18 +593,32 @@ pub async fn migrate_sapling_addresses(
     network: &Network,
     connection: &mut SqliteConnection,
 ) -> Result<()> {
+    // Cover both empty and NULL addresses: older schemas left the column
+    // NULL, newer ones default it to ''.
     let accounts: Vec<(u32, u32, Vec<u8>)> = sqlx::query_as(
         "SELECT id_account, dindex, xvk FROM accounts a
             JOIN sapling_accounts s ON a.id_account = s.account
-            WHERE address = ''",
+            WHERE address IS NULL OR address = ''",
     )
     .fetch_all(&mut *connection)
     .await?;
 
     for (account, dindex, xvk) in accounts {
-        let fvk: [u8; 128] = tiu!(xvk);
-        let fvk = DiversifiableFullViewingKey::from_bytes(&fvk).unwrap();
-        let address = fvk.address((dindex as u64).into()).unwrap();
+        // A row that cannot be backfilled must not abort the migration (or
+        // panic the runtime): skip it, and the lenient address readers will
+        // report it as missing.
+        let Ok(fvk) = <[u8; 128]>::try_from(xvk.as_slice()) else {
+            tracing::warn!("sapling xvk for account {account} is not 128 bytes; skipping backfill");
+            continue;
+        };
+        let Some(fvk) = DiversifiableFullViewingKey::from_bytes(&fvk) else {
+            tracing::warn!("invalid sapling xvk for account {account}; skipping backfill");
+            continue;
+        };
+        let Some(address) = fvk.address((dindex as u64).into()) else {
+            tracing::warn!("invalid diversifier {dindex} for account {account}; skipping backfill");
+            continue;
+        };
         let address = address.encode(network);
         sqlx::query("UPDATE sapling_accounts SET address = ?2 WHERE account = ?1")
             .bind(account)
@@ -651,7 +670,7 @@ pub async fn backfill_diversifier_index(connection: &mut SqliteConnection) -> Re
 
     // Check if any notes need backfilling
     let count: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM notes WHERE pool IN (1, 2) AND diversifier IS NOT NULL AND diversifier_index IS NULL",
+        "SELECT COUNT(*) FROM notes WHERE diversifier IS NOT NULL AND diversifier_index IS NULL",
     )
     .fetch_one(&mut *connection)
     .await?;
@@ -666,37 +685,35 @@ pub async fn backfill_diversifier_index(connection: &mut SqliteConnection) -> Re
 
     // Fetch distinct accounts with unbackfilled notes
     let accounts: Vec<(u32,)> = sqlx::query_as(
-        "SELECT DISTINCT account FROM notes WHERE pool IN (1, 2) AND diversifier IS NOT NULL AND diversifier_index IS NULL",
+        "SELECT DISTINCT account FROM notes WHERE diversifier IS NOT NULL AND diversifier_index IS NULL",
     )
     .fetch_all(&mut *connection)
     .await?;
 
     for (account,) in accounts {
         // Load Sapling DFVK for this account
-        let sapling_dfvk: Option<DiversifiableFullViewingKey> = sqlx::query_as(
-            "SELECT xvk FROM sapling_accounts WHERE account = ?",
-        )
-        .bind(account)
-        .fetch_optional(&mut *connection)
-        .await?
-        .map(|(xvk,): (Vec<u8>,)| {
-            DiversifiableFullViewingKey::from_bytes(&xvk.try_into().unwrap()).unwrap()
-        });
+        let sapling_dfvk: Option<DiversifiableFullViewingKey> =
+            sqlx::query_as("SELECT xvk FROM sapling_accounts WHERE account = ?")
+                .bind(account)
+                .fetch_optional(&mut *connection)
+                .await?
+                .map(|(xvk,): (Vec<u8>,)| {
+                    DiversifiableFullViewingKey::from_bytes(&xvk.try_into().unwrap()).unwrap()
+                });
 
         // Load Orchard FVK for this account
-        let orchard_fvk: Option<FullViewingKey> = sqlx::query_as(
-            "SELECT xvk FROM orchard_accounts WHERE account = ?",
-        )
-        .bind(account)
-        .fetch_optional(&mut *connection)
-        .await?
-        .map(|(xvk,): (Vec<u8>,)| {
-            FullViewingKey::from_bytes(&xvk.try_into().unwrap()).unwrap()
-        });
+        let orchard_fvk: Option<FullViewingKey> =
+            sqlx::query_as("SELECT xvk FROM orchard_accounts WHERE account = ?")
+                .bind(account)
+                .fetch_optional(&mut *connection)
+                .await?
+                .map(|(xvk,): (Vec<u8>,)| {
+                    FullViewingKey::from_bytes(&xvk.try_into().unwrap()).unwrap()
+                });
 
         // Fetch unbackfilled notes for this account
         let notes: Vec<(u32, u8, u8, Vec<u8>)> = sqlx::query_as(
-            "SELECT id_note, pool, scope, diversifier FROM notes WHERE account = ? AND pool IN (1, 2) AND diversifier IS NOT NULL AND diversifier_index IS NULL",
+            "SELECT id_note, pool, scope, diversifier FROM notes WHERE account = ? AND diversifier IS NOT NULL AND diversifier_index IS NULL",
         )
         .bind(account)
         .fetch_all(&mut *connection)
@@ -707,7 +724,7 @@ pub async fn backfill_diversifier_index(connection: &mut SqliteConnection) -> Re
                 1 => sapling_dfvk
                     .as_ref()
                     .and_then(|dfvk| resolve_sapling_diversifier_index(dfvk, scope, &diversifier)),
-                2 => orchard_fvk
+                2 | 3 => orchard_fvk
                     .as_ref()
                     .and_then(|fvk| resolve_orchard_diversifier_index(fvk, scope, &diversifier)),
                 _ => None,
@@ -747,26 +764,12 @@ pub async fn get_prop(connection: &mut SqliteConnection, key: &str) -> Result<Op
     Ok(value.map(|v| v.0))
 }
 
-const MODE_KEY: &str = "coin_selection_mode";
-
-pub async fn get_coin_selection_mode(
-    connection: &mut SqliteConnection,
-) -> Result<crate::pay::solve::Mode> {
-    match get_prop(connection, MODE_KEY).await? {
-        Some(v) if v == "fee" => Ok(crate::pay::solve::Mode::Fee),
-        _ => Ok(crate::pay::solve::Mode::Privacy),
-    }
-}
-
-pub async fn set_coin_selection_mode(
-    connection: &mut SqliteConnection,
-    mode: crate::pay::solve::Mode,
-) -> Result<()> {
-    let value = match mode {
-        crate::pay::solve::Mode::Fee => "fee",
-        crate::pay::solve::Mode::Privacy => "privacy",
-    };
-    put_prop(connection, MODE_KEY, value).await
+pub async fn delete_prop_prefix(connection: &mut SqliteConnection, prefix: &str) -> Result<()> {
+    sqlx::query("DELETE FROM props WHERE key LIKE ?")
+        .bind(format!("{prefix}%"))
+        .execute(&mut *connection)
+        .await?;
+    Ok(())
 }
 
 pub async fn store_account_metadata(
@@ -885,7 +888,7 @@ pub const LEDGER_CODE: u32 = 1;
 pub async fn store_account_hw(
     connection: &mut SqliteConnection,
     account: u32,
-    hw_code: u32,
+    hw_code: u8,
     aindex: u32,
 ) -> Result<()> {
     sqlx::query("UPDATE accounts SET hw = ?2, aindex = ?3 WHERE id_account = ?1")
@@ -1149,7 +1152,15 @@ pub async fn select_account_sapling(
         }),
         xvk: xvk
             .map(|xvk| DiversifiableFullViewingKey::from_bytes(&xvk.try_into().unwrap()).unwrap()),
-        address: address.map(|a| PaymentAddress::decode(network, &a).unwrap()),
+        // A corrupt or empty stored address (e.g. rows imported before the
+        // address was backfilled) must not panic the runtime: surface a
+        // clear error instead.
+        address: match address {
+            Some(a) => Some(PaymentAddress::decode(network, &a).map_err(|e| {
+                anyhow!("invalid stored sapling address for account {account}: {e}")
+            })?),
+            None => None,
+        },
     };
 
     Ok(keys)
@@ -2089,6 +2100,14 @@ pub async fn lock_recent_notes(
     sqlx::query("UPDATE notes SET locked = TRUE WHERE account = ?1 AND height > ?2")
         .bind(account)
         .bind(max_height)
+        .execute(connection)
+        .await?;
+    Ok(())
+}
+
+pub async fn toggle_all_notes(connection: &mut SqliteConnection, account: u32) -> Result<()> {
+    sqlx::query("UPDATE notes SET locked = NOT locked WHERE account = ?1")
+        .bind(account)
         .execute(connection)
         .await?;
     Ok(())

@@ -15,6 +15,11 @@ pub const NUM_POOLS: usize = 4;
 pub const ALL_POOLS: u8 = 0b1111;
 pub const ALL_SHIELDED_POOLS: u8 = 0b1110;
 
+pub const POOL_TRANSPARENT: u8 = 1;
+pub const POOL_SAPLING: u8 = 2;
+pub const POOL_ORCHARD: u8 = 4;
+pub const POOL_IRONWOOD: u8 = 8;
+
 impl PoolMask {
     pub fn empty() -> Self {
         PoolMask(0)
@@ -75,14 +80,10 @@ impl PoolMask {
         if address.can_receive_as(PoolType::Transparent) {
             pool_mask |= 1;
         }
-        if address.can_receive_as(PoolType::Shielded(
-            ShieldedPool::Sapling,
-        )) {
+        if address.can_receive_as(PoolType::Shielded(ShieldedPool::Sapling)) {
             pool_mask |= 2;
         }
-        if address.can_receive_as(PoolType::Shielded(
-            ShieldedPool::Orchard,
-        )) {
+        if address.can_receive_as(PoolType::Shielded(ShieldedPool::Orchard)) {
             pool_mask |= 4 | 8; // I and O share the same addresses
         }
         Ok(PoolMask(pool_mask))

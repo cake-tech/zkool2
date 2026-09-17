@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+from decimal import Decimal
 
 import pytest
 from gql import GraphQLRequest, gql
@@ -19,7 +20,9 @@ from utils import (
 
 
 @pytest.mark.asyncio
-async def test_websocket_subscriptions(gql_client_factory, rpc_url, seed, zkool_binary, ws_url, lwd_url):
+async def test_websocket_subscriptions(
+    gql_client_factory, rpc_url, seed, zkool_binary, ws_url, lwd_url
+):
     """Test WebSocket subscriptions using raw websockets library."""
     if not seed:
         pytest.skip("SEED not set")
@@ -127,6 +130,14 @@ async def test_websocket_subscriptions(gql_client_factory, rpc_url, seed, zkool_
             receiver_address = result["addressByAccount"]["ironwood"]
             print(f"Receiver address: {receiver_address}")
 
+            # The mempool monitor reloads account viewing keys when it restarts
+            # after a new block. Mine a setup block so it sees the receiver
+            # account before testing the pending transaction.
+            setup_height = await get_current_height(client)
+            await mine_blocks(rpc_url, 1)
+            await wait_for_blocks(client, setup_height, 1)
+            await asyncio.sleep(3)
+
             print("\n=== Setting up WebSocket subscription ===")
 
             import websockets
@@ -162,11 +173,13 @@ async def test_websocket_subscriptions(gql_client_factory, rpc_url, seed, zkool_
                                     dkgAccount
                                 }
                             }
-                        """
-                    }
+                        """,
+                    },
                 }
                 await ws.send(json.dumps(subscription_query))
-                print(f"Subscription request sent for account {account_id}, id: {subscription_query['id']}")
+                print(
+                    f"Subscription request sent for account {account_id}, id: {subscription_query['id']}"
+                )
                 return subscription_query["id"]
 
             # Subscribe to funding account
@@ -193,7 +206,9 @@ async def test_websocket_subscriptions(gql_client_factory, rpc_url, seed, zkool_
                             event_data = payload["data"].get("events")
                             if event_data:
                                 all_events.append(event_data)
-                                print(f"Received event: type={event_data['type']}, height={event_data['height']}, txid={event_data.get('txid', 'N/A')}")
+                                print(
+                                    f"Received event: type={event_data['type']}, height={event_data['height']}, txid={event_data.get('txid', 'N/A')}"
+                                )
 
             # Start event collector in background
             collector_task = asyncio.create_task(collect_all_events())
@@ -219,7 +234,11 @@ async def test_websocket_subscriptions(gql_client_factory, rpc_url, seed, zkool_
             result = await client.execute_async(
                 GraphQLRequest(
                     pay_mutation,
-                    variable_values={"account": funding_id, "address": receiver_address, "amount": "0.01"},
+                    variable_values={
+                        "account": funding_id,
+                        "address": receiver_address,
+                        "amount": "0.01",
+                    },
                 )
             )
             txid = result["pay"]
@@ -233,7 +252,9 @@ async def test_websocket_subscriptions(gql_client_factory, rpc_url, seed, zkool_
 
             print("All events")
             for i, event in enumerate(all_events):
-                print(f"  Event {i+1}: type={event['type']}, height={event['height']}, txid={event.get('txid', 'N/A')}")
+                print(
+                    f"  Event {i + 1}: type={event['type']}, height={event['height']}, txid={event.get('txid', 'N/A')}"
+                )
 
             # Define the query
             unconfirmed_query = gql(
@@ -274,6 +295,37 @@ async def test_websocket_subscriptions(gql_client_factory, rpc_url, seed, zkool_
 
             print("✓ unconfirmedByAccount API structure is correct")
 
+            # Test 1c: the receiver's incoming Ironwood note must be visible
+            # in the mempool before the transaction is mined
+            print("\n=== Test 1c: Incoming Ironwood note in unconfirmed API ===")
+
+            result = await client.execute_async(
+                GraphQLRequest(unconfirmed_query, variable_values={"account": receiver_id})
+            )
+            receiver_unconfirmed = result["unconfirmedByAccount"]
+            print(f"Receiver unconfirmed transactions: {len(receiver_unconfirmed)}")
+
+            receiver_notes = [
+                note
+                for tx in receiver_unconfirmed
+                if tx["txid"].lower() == txid.lower()
+                for note in tx["notes"]
+            ]
+            print(f"Receiver notes for {txid}: {receiver_notes}")
+
+            assert receiver_notes, (
+                f"Receiver should see the incoming Ironwood note in unconfirmed, "
+                f"got {receiver_unconfirmed}"
+            )
+            ironwood_notes = [n for n in receiver_notes if n["pool"] == 3]
+            assert ironwood_notes, (
+                f"Incoming note should be Ironwood (pool 3), got {receiver_notes}"
+            )
+            assert any(Decimal(n["value"]) == Decimal("0.01") for n in ironwood_notes), (
+                f"Ironwood note should be 0.01, got {ironwood_notes}"
+            )
+            print("✓ Receiver sees the incoming Ironwood note (pool 3, value 0.01)")
+
             # Mine a block
             height_before = await get_current_height(client)
             await mine_blocks(rpc_url, 1)
@@ -283,10 +335,14 @@ async def test_websocket_subscriptions(gql_client_factory, rpc_url, seed, zkool_
             await asyncio.sleep(3)
 
             # Filter events for funding account
-            funding_events = [e for e in all_events if e.get("txid") == txid or e.get("type") == "BLOCK"]
+            funding_events = [
+                e for e in all_events if e.get("txid") == txid or e.get("type") == "BLOCK"
+            ]
             print(f"Funding account events: {len(funding_events)}")
             for i, event in enumerate(funding_events):
-                print(f"  Event {i+1}: type={event['type']}, height={event['height']}, txid={event.get('txid', 'N/A')}")
+                print(
+                    f"  Event {i + 1}: type={event['type']}, height={event['height']}, txid={event.get('txid', 'N/A')}"
+                )
 
             assert len(funding_events) >= 1, "Should receive at least one event"
 
@@ -295,13 +351,19 @@ async def test_websocket_subscriptions(gql_client_factory, rpc_url, seed, zkool_
             block_event = next((e for e in funding_events if e["type"] == "BLOCK"), None)
 
             if tx_event:
-                print(f"✓ Tx event found: txid={tx_event['txid']}, height={tx_event['height']}, value={tx_event['value']}")
-                assert tx_event["txid"].lower() == txid.lower(), "Tx event txid should match sent txid"
+                print(
+                    f"✓ Tx event found: txid={tx_event['txid']}, height={tx_event['height']}, value={tx_event['value']}"
+                )
+                assert tx_event["txid"].lower() == txid.lower(), (
+                    "Tx event txid should match sent txid"
+                )
 
             if block_event:
                 print(f"✓ Block event found: height={block_event['height']}")
                 # Block height should be >= height_before (may be the same if we received a stale event)
-                assert block_event["height"] >= height_before, f"Block height should be >= {height_before}, got {block_event['height']}"
+                assert block_event["height"] >= height_before, (
+                    f"Block height should be >= {height_before}, got {block_event['height']}"
+                )
 
             print("\n=== Test 2: Incoming transaction subscription ===")
 
@@ -320,7 +382,11 @@ async def test_websocket_subscriptions(gql_client_factory, rpc_url, seed, zkool_
             result = await client.execute_async(
                 GraphQLRequest(
                     pay_mutation,
-                    variable_values={"account": funding_id, "address": receiver_address, "amount": "0.005"},
+                    variable_values={
+                        "account": funding_id,
+                        "address": receiver_address,
+                        "amount": "0.005",
+                    },
                 )
             )
             txid2 = result["pay"]
@@ -340,7 +406,9 @@ async def test_websocket_subscriptions(gql_client_factory, rpc_url, seed, zkool_
             if receiver_events:
                 incoming_tx = next((e for e in receiver_events if e["type"] == "TX"), None)
                 if incoming_tx:
-                    print(f"✓ Incoming Tx event found: txid={incoming_tx['txid']}, value={incoming_tx['value']}")
+                    print(
+                        f"✓ Incoming Tx event found: txid={incoming_tx['txid']}, value={incoming_tx['value']}"
+                    )
                     assert incoming_tx["txid"].lower() == txid2.lower()
 
             print("\n=== Test 3: Multiple block events ===")
@@ -356,26 +424,35 @@ async def test_websocket_subscriptions(gql_client_factory, rpc_url, seed, zkool_
             await mine_blocks(rpc_url, 3)
             await asyncio.sleep(3)  # Give time for blocks to propagate
             height_after = await get_current_height(client)
-            print(f"Height after mining: {height_after}, mined: {height_after - height_before} blocks")
+            print(
+                f"Height after mining: {height_after}, mined: {height_after - height_before} blocks"
+            )
 
             # Filter block events from all collected events
             block_events = [e for e in all_events if e["type"] == "BLOCK"]
 
             print(f"Block events received: {len(block_events)}")
-            assert len(block_events) >= 1, f"Should receive at least 1 block event, got {len(block_events)}"
+            assert len(block_events) >= 1, (
+                f"Should receive at least 1 block event, got {len(block_events)}"
+            )
 
             for i, block in enumerate(block_events):
                 expected_height = height_before + i + 1
-                print(f"Block {i+1}: expected height {expected_height}, got {block['height']}")
+                print(f"Block {i + 1}: expected height {expected_height}, got {block['height']}")
                 # The last block event should match the final height
                 if i == len(block_events) - 1:
-                    assert block["height"] == height_after, f"Last block height should be {height_after}, got {block['height']}"
+                    assert block["height"] == height_after, (
+                        f"Last block height should be {height_after}, got {block['height']}"
+                    )
 
-            print(f"✓ Received {len(block_events)} block event(s) (note: not all blocks may generate events due to upstream polling)")
+            print(
+                f"✓ Received {len(block_events)} block event(s) (note: not all blocks may generate events due to upstream polling)"
+            )
             if block_events:
                 last_block = block_events[-1]
-                assert height_before <= last_block["height"] <= height_after, \
+                assert height_before <= last_block["height"] <= height_after, (
                     f"Block height should be between {height_before} and {height_after}, got {last_block['height']}"
+                )
                 print(f"✓ Last block event height {last_block['height']} is within expected range")
 
             print("\n✅ All subscription tests passed!")

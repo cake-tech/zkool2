@@ -107,6 +107,24 @@ pub async fn query_lwd_list(coin: u8) -> Result<Vec<LWDInfo>> {
     crate::net::lwd::query_lwd_list(coin).await
 }
 
+/// True when `url` is a mixnet-native server address
+/// (`nym://<identity>.<encryption>@<gateway>`).
+///
+/// Always exported so the generated bindings do not depend on the `nym`
+/// feature; without it no URL is a mixnet address.
+#[cfg_attr(feature = "flutter", frb(sync))]
+pub fn is_valid_nym_url(url: String) -> bool {
+    #[cfg(feature = "nym")]
+    {
+        crate::net::nym_service::parse_nym_url(&url).is_some()
+    }
+    #[cfg(not(feature = "nym"))]
+    {
+        let _ = url;
+        false
+    }
+}
+
 #[cfg_attr(feature = "flutter", frb(dart_metadata = ("freezed")))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExchangeRate {

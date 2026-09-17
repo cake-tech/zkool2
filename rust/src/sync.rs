@@ -27,10 +27,7 @@ use crate::{
         store_account_transparent_addr,
     },
     lwd::CompactBlock,
-    warp::{
-        legacy::CommitmentTreeFrontier,
-        sync::warp_sync,
-    },
+    warp::{legacy::CommitmentTreeFrontier, sync::warp_sync},
 };
 use bincode::config;
 use sqlx::pool::PoolConnection;
@@ -44,8 +41,8 @@ use zcash_protocol::consensus::{NetworkUpgrade, Parameters};
 pub const DEFAULT_ACTIONS_PER_SYNC: u32 = 10000u32;
 pub const DEFAULT_TRANSPARENT_LIMIT: u32 = 100u32;
 
-pub use zcash_trees::types::{BlockHeader, Issuance, Note, Transaction, WarpSyncMessage, UTXO};
 pub use zcash_trees::types::SyncError;
+pub use zcash_trees::types::{BlockHeader, Issuance, Note, Transaction, WarpSyncMessage, UTXO};
 
 pub struct NoteExtended {
     pub id: u32,
@@ -128,7 +125,12 @@ pub async fn synchronize_impl<S: Sink<SyncProgress> + Send + 'static>(
             .fetch_one(&mut *connection)
             .await?;
             if let (Some(account), Some(height)) = r {
-                debug!("Account {} - current DB sync height: {}, next sync height: {}", account, height, height + 1);
+                debug!(
+                    "Account {} - current DB sync height: {}, next sync height: {}",
+                    account,
+                    height,
+                    height + 1
+                );
                 account_heights.insert(account, height + 1);
 
                 let (use_internal,): (bool,) =
@@ -141,14 +143,20 @@ pub async fn synchronize_impl<S: Sink<SyncProgress> + Send + 'static>(
 
                 // Check which pools this account has
                 let t_count: (i64,) = sqlx::query_as(
-                    "SELECT COUNT(*) FROM transparent_address_accounts WHERE account = ?"
-                ).bind(account).fetch_one(&mut *connection).await?;
+                    "SELECT COUNT(*) FROM transparent_address_accounts WHERE account = ?",
+                )
+                .bind(account)
+                .fetch_one(&mut *connection)
+                .await?;
                 debug!(
                     "Account {} - has {} transparent addresses, use_internal={}",
                     account, t_count.0, use_internal
                 );
             } else {
-                debug!("Account {} - NO sync_heights entry found, will be skipped", account);
+                debug!(
+                    "Account {} - NO sync_heights entry found, will be skipped",
+                    account
+                );
             }
         }
 
@@ -156,7 +164,10 @@ pub async fn synchronize_impl<S: Sink<SyncProgress> + Send + 'static>(
         let mut unique_heights: Vec<u32> = account_heights.values().cloned().collect();
         unique_heights.sort_unstable();
         unique_heights.dedup();
-        debug!("Unique sync start heights for accounts: {:?}", unique_heights);
+        debug!(
+            "Unique sync start heights for accounts: {:?}",
+            unique_heights
+        );
 
         let (tx_progress, mut rx_progress) = channel::<SyncProgress>(1);
 
@@ -191,7 +202,12 @@ pub async fn synchronize_impl<S: Sink<SyncProgress> + Send + 'static>(
                 continue;
             }
 
-            debug!("Syncing accounts {:?} from height {} to {}", accounts_to_sync.iter().map(|(a, _)| a).collect::<Vec<_>>(), start_height, end_height);
+            debug!(
+                "Syncing accounts {:?} from height {} to {}",
+                accounts_to_sync.iter().map(|(a, _)| a).collect::<Vec<_>>(),
+                start_height,
+                end_height
+            );
 
             let pool = c.get_pool()?;
             // Update the sync heights for these accounts
@@ -221,6 +237,10 @@ pub async fn synchronize_impl<S: Sink<SyncProgress> + Send + 'static>(
             )
             .await?;
 
+            // Over the mixnet, download blocks in small chunks so each
+            // GetBlockRange stream fits in one nym-rpc session; elsewhere a
+            // single stream for the whole range is cheaper.
+            let chunk_size = c.is_mixnet().then_some(MIXNET_SYNC_CHUNK);
             shielded_sync(
                 &network,
                 &pool,
@@ -229,6 +249,7 @@ pub async fn synchronize_impl<S: Sink<SyncProgress> + Send + 'static>(
                 start_height,
                 end_height,
                 actions_per_sync,
+                chunk_size,
                 tx_progress.clone(),
                 tx_cancel.subscribe(),
             )
@@ -433,6 +454,12 @@ pub(crate) async fn transparent_sync(
                                     .bind(account)
                                     .execute(&mut *db_tx)
                                     .await?;
+                                    // Release any broadcast-time lock now that the
+                                    // spend is mined (noop if it was not locked).
+                                    sqlx::query("UPDATE notes SET locked = FALSE WHERE id_note = ?")
+                                        .bind(id)
+                                        .execute(&mut *db_tx)
+                                        .await?;
                                 }
                             }
 
@@ -530,7 +557,11 @@ pub async fn get_tree_state(
     network: &Network,
     client: &mut Client,
     height: u32,
-) -> Result<(CommitmentTreeFrontier, CommitmentTreeFrontier, CommitmentTreeFrontier)> {
+) -> Result<(
+    CommitmentTreeFrontier,
+    CommitmentTreeFrontier,
+    CommitmentTreeFrontier,
+)> {
     let min_height: u32 = network
         .activation_height(zcash_protocol::consensus::NetworkUpgrade::Sapling)
         .unwrap()
@@ -626,17 +657,22 @@ fn resolve_diversifier_index(
     diversifier: &[u8],
 ) -> Option<i64> {
     match pool {
-        1 => cache
-            .sapling
-            .get(&account)
-            .and_then(|keys| crate::db::resolve_sapling_diversifier_index(&keys.dfvk, scope, diversifier)),
-        2 => cache
-            .orchard
-            .get(&account)
-            .and_then(|keys| crate::db::resolve_orchard_diversifier_index(&keys.fvk, scope, diversifier)),
+        1 => cache.sapling.get(&account).and_then(|keys| {
+            crate::db::resolve_sapling_diversifier_index(&keys.dfvk, scope, diversifier)
+        }),
+        2 | 3 => cache.orchard.get(&account).and_then(|keys| {
+            crate::db::resolve_orchard_diversifier_index(&keys.fvk, scope, diversifier)
+        }),
         _ => None,
     }
 }
+
+/// Blocks per `GetBlockRange` request when syncing over the Nym mixnet.
+/// A single full-range stream starves the nym-rpc session of reply SURBs
+/// and trips its 120s stall watchdog; small chunks keep each stream within
+/// one session's budget and commit progress between chunks, so a dropped
+/// session only costs the current chunk.
+pub const MIXNET_SYNC_CHUNK: u32 = 1000;
 
 #[allow(clippy::too_many_arguments)]
 pub async fn shielded_sync(
@@ -647,8 +683,9 @@ pub async fn shielded_sync(
     start: u32,
     end: u32,
     actions_per_sync: u32,
+    chunk_size: Option<u32>,
     tx_progress: Sender<SyncProgress>,
-    rx_cancel: broadcast::Receiver<()>,
+    mut rx_cancel: broadcast::Receiver<()>,
 ) -> Result<()> {
     let activation_height: u32 = network
         .activation_height(NetworkUpgrade::Sapling)
@@ -657,7 +694,54 @@ pub async fn shielded_sync(
     let start = start.max(activation_height);
     let end = end.max(activation_height);
 
+    let chunk_size = chunk_size.unwrap_or(u32::MAX).max(1);
+    let mut chunk_start = start;
+    loop {
+        let chunk_end = chunk_start.saturating_add(chunk_size - 1).min(end);
+        shielded_sync_range(
+            network,
+            pool,
+            client,
+            accounts,
+            chunk_start,
+            chunk_end,
+            actions_per_sync,
+            tx_progress.clone(),
+            rx_cancel.resubscribe(),
+        )
+        .await?;
+        if chunk_end >= end {
+            break;
+        }
+        // A cancel delivered during the finished chunk was consumed by that
+        // chunk's resubscribed receiver; check ours before starting the next.
+        match rx_cancel.try_recv() {
+            Err(broadcast::error::TryRecvError::Empty)
+            | Err(broadcast::error::TryRecvError::Closed) => {}
+            _ => {
+                debug!("Sync cancelled between chunks");
+                break;
+            }
+        }
+        chunk_start = chunk_end + 1;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn shielded_sync_range(
+    network: &Network,
+    pool: &SqlitePool,
+    client: &mut Client,
+    accounts: &[(u32, bool)],
+    start: u32,
+    end: u32,
+    actions_per_sync: u32,
+    tx_progress: Sender<SyncProgress>,
+    rx_cancel: broadcast::Receiver<()>,
+) -> Result<()> {
     let accounts = accounts.to_vec();
+    let account_ids: Vec<u32> = accounts.iter().map(|(a, _)| *a).collect();
     let db_writer_task = {
         let (s, o, i) = get_tree_state(network, client, start - 1).await?;
 
@@ -688,7 +772,9 @@ pub async fn shielded_sync(
                     let mut new_messages = vec![];
                     mem::swap(&mut new_messages, &mut messages);
                     for msg in new_messages {
-                        match handle_message(&network, &mut db_tx, msg, &tx_progress, &key_cache).await {
+                        match handle_message(&network, &mut db_tx, msg, &tx_progress, &key_cache)
+                            .await
+                        {
                             Ok(_) => {}
                             Err(e) => {
                                 info!("ERROR HANDLING MESSAGE: {:?}", e);
@@ -716,7 +802,7 @@ pub async fn shielded_sync(
             db_tx.commit().await.unwrap();
 
             debug!("[db handler] stopped");
-            check_witness_consistency(&mut writer_connection).await?;
+            check_witness_consistency(&mut writer_connection, &account_ids).await?;
 
             Ok::<_, anyhow::Error>(())
         });
@@ -904,6 +990,13 @@ async fn handle_message(
             .bind(&utxo.txid)
             .execute(&mut **db_tx)
             .await?;
+            // Release any broadcast-time lock now that the spend is mined
+            // (noop if it was not locked).
+            sqlx::query("UPDATE notes SET locked = FALSE WHERE account = ?1 AND cmx = ?2")
+                .bind(utxo.account)
+                .bind(&utxo.cmx)
+                .execute(&mut **db_tx)
+                .await?;
             debug!("Processing Spend: {:?}", &utxo);
             assert_eq!(r.rows_affected(), 1);
         }
@@ -1037,24 +1130,37 @@ pub async fn trim_sync_data(
 }
 
 #[cfg(debug_assertions)]
-pub async fn check_witness_consistency(connection: &mut SqliteConnection) -> Result<()> {
-    let notes = sqlx::query(
-    "WITH utxo AS (SELECT * FROM notes n LEFT JOIN spends s ON n.id_note = s.id_note WHERE s.id_note IS NULL),
+pub async fn check_witness_consistency(
+    connection: &mut SqliteConnection,
+    accounts: &[u32],
+) -> Result<()> {
+    if accounts.is_empty() {
+        return Ok(());
+    }
+    let placeholders = vec!["?"; accounts.len()].join(", ");
+    let query = format!(
+        "WITH utxo AS (SELECT * FROM notes n LEFT JOIN spends s ON n.id_note = s.id_note WHERE s.id_note IS NULL),
     db_height AS (SELECT * FROM sync_heights)
     SELECT u.account, u.pool, u.height, u.value, d.height FROM utxo u
     JOIN db_height d ON d.account = u.account AND d.pool = u.pool
     LEFT JOIN witnesses w ON u.id_note = w.note AND w.account = u.account
     AND w.height = d.height
-    WHERE w.id_witness IS NULL AND u.pool <> 0 AND u.id_asset IS NULL")
-    .map(|r: SqliteRow| {
-        let account: u32 = r.get(0);
-        let pool: u8 = r.get(1);
-        let height: u32 = r.get(2);
-        let value: u64 = r.get(3);
-        let db_height: u32 = r.get(4);
-        (account, pool, height, value, db_height)
-    })
-    .fetch_all(connection).await?;
+    WHERE w.id_witness IS NULL AND u.pool <> 0 AND u.id_asset IS NULL
+    AND u.account IN ({placeholders})");
+    let mut q = sqlx::query(&query);
+    for account in accounts {
+        q = q.bind(account);
+    }
+    let notes = q
+        .map(|r: SqliteRow| {
+            let account: u32 = r.get(0);
+            let pool: u8 = r.get(1);
+            let height: u32 = r.get(2);
+            let value: u64 = r.get(3);
+            let db_height: u32 = r.get(4);
+            (account, pool, height, value, db_height)
+        })
+        .fetch_all(connection).await?;
 
     for (account, pool, height, value, db_height) in notes.iter() {
         debug!("Missing witness for note {pool} {height} {value} of account {account} at height {db_height}");
@@ -1067,7 +1173,10 @@ pub async fn check_witness_consistency(connection: &mut SqliteConnection) -> Res
 }
 
 #[cfg(not(debug_assertions))]
-pub async fn check_witness_consistency(_connection: &mut SqliteConnection) -> Result<()> {
+pub async fn check_witness_consistency(
+    _connection: &mut SqliteConnection,
+    _accounts: &[u32],
+) -> Result<()> {
     Ok(())
 }
 
@@ -1167,6 +1276,11 @@ pub async fn transparent_sweep(
     let hw = get_account_hw(&mut connection, account).await?;
     let aindex = get_account_aindex(&mut connection, account).await?;
     let dindex = get_account_dindex(&mut connection, account).await?;
+    let (use_internal,): (bool,) =
+        sqlx::query_as("SELECT use_internal FROM accounts WHERE id_account = ?")
+            .bind(account)
+            .fetch_one(&mut *connection)
+            .await?;
     tokio::spawn(async move {
         let ledger = get_ledger(&mut connection, account).await?;
         let mut n_added = 0;
@@ -1181,7 +1295,7 @@ pub async fn transparent_sweep(
                     Some(xvk) => derive_transparent_address(xvk, scope, dindex, false)?,
                     None if hw != 0 => {
                         ledger
-                            .get_hw_transparent_address(&network, aindex, scope, dindex)
+                            .get_transparent_pubkey(&network, aindex, scope, dindex)
                             .await?
                     }
                     _ => anyhow::bail!("Sweep needs an xpub key"),
@@ -1199,18 +1313,83 @@ pub async fn transparent_sweep(
                         => {
                         let mut txids = txids?;
                         if txids.next().await.is_some() {
+                            // A used address resets the gap count: only
+                            // consecutive unused addresses end the scan.
+                            gap = 0;
                             let sk = if let Some(tsk) = tk.xsk.as_ref() {
-                                let sk = derive_transparent_sk(tsk, scope, dindex)?;
-                                Some(sk)
+                                Some(derive_transparent_sk(tsk, scope, dindex)?)
                             } else {
                                 None
                             };
-                            if store_account_transparent_addr(
+                            let added = store_account_transparent_addr(
                                 &mut connection, account, scope, dindex, sk, &pk, &taddr, false,
                             )
-                            .await?
-                            {
+                            .await?;
+                            if added {
                                 n_added += 1;
+                            }
+
+                            let want_counterpart = if scope == 0 {
+                                use_internal
+                            } else {
+                                true
+                            };
+                            if want_counterpart {
+                                let counterpart_scope = 1 - scope;
+                                let existing: (i64,) = sqlx::query_as(
+                                    "SELECT COUNT(*) FROM transparent_address_accounts
+                                    WHERE account = ?1 AND scope = ?2 AND dindex = ?3",
+                                )
+                                .bind(account)
+                                .bind(counterpart_scope)
+                                .bind(dindex)
+                                .fetch_one(&mut *connection)
+                                .await?;
+                                if existing.0 == 0 {
+                                    let (csk, cpk, ctaddr) = match xvk.as_ref() {
+                                        Some(xvk) => {
+                                            let sk = if let Some(tsk) = tk.xsk.as_ref() {
+                                                Some(derive_transparent_sk(
+                                                    tsk,
+                                                    counterpart_scope,
+                                                    dindex,
+                                                )?)
+                                            } else {
+                                                None
+                                            };
+                                            let (pk, address) = derive_transparent_address(
+                                                xvk,
+                                                counterpart_scope,
+                                                dindex,
+                                                false,
+                                            )?;
+                                            (sk, pk, address)
+                                        }
+                                        None if hw != 0 => {
+                                            let (pk, address) = ledger
+                                                .get_transparent_pubkey(
+                                                    &network,
+                                                    aindex,
+                                                    counterpart_scope,
+                                                    dindex,
+                                                )
+                                                .await?;
+                                            (None, pk, address)
+                                        }
+                                        _ => anyhow::bail!("Sweep needs an xpub key"),
+                                    };
+                                    store_account_transparent_addr(
+                                        &mut connection,
+                                        account,
+                                        counterpart_scope,
+                                        dindex,
+                                        csk,
+                                        &cpk,
+                                        &ctaddr.encode(&network),
+                                        false,
+                                    )
+                                    .await?;
+                                }
                             }
                         } else {
                             gap += 1;
@@ -1223,6 +1402,23 @@ pub async fn transparent_sweep(
                 }
             }
         }
+        // Advance the account dindex to the greatest stored external (scope 0)
+        // used index, never backwards. The scan only stores used addresses and
+        // address generation keeps accounts.dindex at the newest row, so the
+        // table's max external dindex is the receiving frontier.
+        sqlx::query(
+            "UPDATE accounts
+            SET dindex = max(
+                dindex,
+                COALESCE(
+                    (SELECT max(dindex) FROM transparent_address_accounts
+                     WHERE account = accounts.id_account AND scope = 0),
+                    0))
+            WHERE id_account = ?",
+        )
+        .bind(account)
+        .execute(&mut *connection)
+        .await?;
         Ok(n_added)
     });
     Ok(())

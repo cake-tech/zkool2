@@ -2,20 +2,20 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::mem::swap;
 
-use zcash_trees::network::Network;
 use anyhow::{Context as _, Result};
 use bincode::config::legacy;
 use futures::TryStreamExt;
 use rayon::prelude::*;
 use sqlx::{Row, SqliteConnection};
 use tokio::sync::mpsc::Sender;
-use tracing::{enabled, debug};
+use tracing::{debug, enabled};
+use zcash_trees::network::Network;
 
-use ::orchard::issuance::auth::{IssueValidatingKey, ZSASchnorr};
-use ::orchard::note::{AssetBase, AssetId};
 use crate::lwd::{CompactBlock, CompactIssueNote, CompactTx};
 use crate::warp::{Edge, Hasher, Witness, MERKLE_DEPTH};
 use crate::Hash32;
+use ::orchard::issuance::auth::{IssueValidatingKey, ZSASchnorr};
+use ::orchard::note::{AssetBase, AssetId};
 use zcash_trees::types::{Note, Transaction, WarpSyncMessage, UTXO};
 
 pub mod ironwood;
@@ -208,7 +208,11 @@ impl<P: ShieldedProtocol> Synchronizer<P> {
             })
         });
 
-        let mut notes: Vec<(<P as ShieldedProtocol>::Note, Note, &<P as ShieldedProtocol>::NK)> = outputs
+        let mut notes: Vec<(
+            <P as ShieldedProtocol>::Note,
+            Note,
+            &<P as ShieldedProtocol>::NK,
+        )> = outputs
             .flat_map_iter(|(height, ivtx, vout, o)| {
                 self.keys.iter().flat_map(move |(account, scope, ivk, nk)| {
                     P::try_decrypt(
@@ -229,7 +233,6 @@ impl<P: ShieldedProtocol> Synchronizer<P> {
                 })
             })
             .collect::<Vec<_>>();
-        debug!("Action notes #{}", notes.len());
 
         // Process issuance notes from vtx.issuances — plaintext, no trial
         // decryption needed.  Per tx we track the cmxs (for tree building)
@@ -244,7 +247,9 @@ impl<P: ShieldedProtocol> Synchronizer<P> {
                 let mut note_vout = actions_len;
 
                 for iss in &tx.issuances {
-                    let desc_hash: [u8; 32] = iss.asset_desc_hash.as_slice()
+                    let desc_hash: [u8; 32] = iss
+                        .asset_desc_hash
+                        .as_slice()
                         .try_into()
                         .map_err(|_| anyhow::anyhow!("Invalid asset_desc_hash length"))?;
                     let ik = IssueValidatingKey::<ZSASchnorr>::decode(&iss.ik)
@@ -256,13 +261,6 @@ impl<P: ShieldedProtocol> Synchronizer<P> {
                         // Compute cmx for tree building. Returns None for
                         // protocols that don't support issuance (Sapling, Ironwood).
                         if let Some(cmx) = P::compute_issuance_cmx(note, &asset_base)? {
-                            debug!(
-                                "Issuance cmx: height={} ivtx={} vout={} cmx={}",
-                                height,
-                                ivtx,
-                                note_vout,
-                                hex::encode(cmx)
-                            );
                             tx_issuance_cmxs.push(cmx);
                         }
 
@@ -295,7 +293,6 @@ impl<P: ShieldedProtocol> Synchronizer<P> {
                 }
             }
         }
-        debug!("Notes total (actions + issuances) #{}", notes.len());
 
         // Build a lookup of per-tx issuance note counts for position tracking.
         let mut issuance_count: std::collections::HashMap<(u32, u32), u32> =
@@ -380,7 +377,6 @@ impl<P: ShieldedProtocol> Synchronizer<P> {
         let mut cmxs = vec![];
         let mut count_cmxs = 0;
 
-        debug!("WS starting position {}-{}", self.position, position);
         for depth in 0..MERKLE_DEPTH as usize {
             let mut position = self.position >> depth;
             if position % 2 == 1 {
@@ -391,7 +387,10 @@ impl<P: ShieldedProtocol> Synchronizer<P> {
             if depth == 0 {
                 // Build lookup for issuance cmxs per (height, ivtx)
                 let issuance_cmx_map: std::collections::HashMap<(u32, u32), &[[u8; 32]]> =
-                    issuance_cmxs.iter().map(|(h, i, c)| ((*h, *i), c.as_slice())).collect();
+                    issuance_cmxs
+                        .iter()
+                        .map(|(h, i, c)| ((*h, *i), c.as_slice()))
+                        .collect();
 
                 for cb in blocks.iter() {
                     for (ivtx, vtx) in cb.vtx.iter().enumerate() {

@@ -9,7 +9,14 @@ use zcash_protocol::consensus::NetworkConstants;
 use zcash_transparent::address::TransparentAddress;
 
 use crate::{
-    IntoAnyhow, account::get_sapling_address, api::coin::Network, db::{get_account_aindex, get_account_dindex}, ledger::{LedgerError, LedgerResult, transport::{APDUCommand, Device, connect_ledger}}, tiu
+    account::get_sapling_address,
+    api::coin::Network,
+    db::{get_account_aindex, get_account_dindex},
+    ledger::{
+        transport::{connect_ledger, APDUCommand, Device},
+        LedgerError, LedgerResult,
+    },
+    tiu, IntoAnyhow,
 };
 
 pub async fn get_fvk<D: Device>(ledger: &D, aindex: u32) -> LedgerResult<FullViewingKey> {
@@ -143,7 +150,11 @@ pub async fn get_hw_transparent_address<D: Device>(
     Ok((pk.to_vec(), taddress))
 }
 
-pub async fn show_sapling_address(network: &Network, connection: &mut SqliteConnection, account: u32) -> LedgerResult<String> {
+pub async fn show_sapling_address(
+    network: &Network,
+    connection: &mut SqliteConnection,
+    account: u32,
+) -> LedgerResult<String> {
     let ledger = connect_ledger().await?;
     let aindex = get_account_aindex(connection, account).await? | 0x80000000u32;
     // We SHOULD be using the diversifier index and ask the device
@@ -193,7 +204,11 @@ pub async fn show_sapling_address(network: &Network, connection: &mut SqliteConn
     Ok(address.encode(network))
 }
 
-pub async fn show_transparent_address(network: &Network, connection: &mut SqliteConnection, account: u32) -> LedgerResult<String> {
+pub async fn show_transparent_address(
+    network: &Network,
+    connection: &mut SqliteConnection,
+    account: u32,
+) -> LedgerResult<String> {
     let ledger = connect_ledger().await?;
     let aindex = get_account_aindex(connection, account).await?;
     let dindex = get_account_dindex(connection, account).await?;
@@ -220,65 +235,3 @@ pub async fn show_transparent_address(network: &Network, connection: &mut Sqlite
     Ok(ta.encode(network))
 }
 
-#[cfg(test)]
-mod tests {
-    use byteorder::{WriteBytesExt, LE};
-    use sapling_crypto::PaymentAddress;
-    use zcash_keys::encoding::AddressCodec;
-    use zcash_protocol::consensus::MainNetwork;
-
-    use crate::{ledger::transport::{APDUCommand, Device, LEDGER_ZEMU}, tiu};
-    use std::io::Write;
-
-    #[tokio::test]
-    pub async fn get_taddress() -> anyhow::Result<()> {
-        let ledger = LEDGER_ZEMU.lock().await.clone().unwrap();
-        // let ledger = connect_ledger().await?;
-        let aindex = 0u32;
-        let dindex = 0u32;
-        let mut data = vec![];
-        data.write_all(&(0x8000_0000u32 | 44).to_le_bytes())?;
-        data.write_all(&(0x8000_0000u32 | 133).to_le_bytes())?;
-        data.write_all(&(0x8000_0000u32 | aindex).to_le_bytes())?;
-        data.write_all(&(aindex).to_le_bytes())?;
-        data.write_all(&(dindex).to_le_bytes())?;
-        let get_taddress = APDUCommand {
-            cla: 0x85,
-            ins: 0x01,
-            p1: 1,
-            p2: 0,
-            data,
-        };
-
-        println!("{}", get_taddress.ins);
-        let res = ledger.execute(get_taddress).await?;
-        println!("{}", res.retcode);
-        let address = String::from_utf8(res.data[33..].to_vec())?;
-        println!("{address}");
-        Ok(())
-    }
-
-    #[tokio::test]
-    pub async fn get_zaddress() -> anyhow::Result<()> {
-        let ledger = LEDGER_ZEMU.lock().await.clone().unwrap();
-        // let ledger = connect_ledger().await?;
-        let aindex = 0u32;
-        let mut data = vec![];
-        data.write_u32::<LE>(0x8000_0000u32 | aindex)?;
-        let get_taddress = APDUCommand {
-            cla: 0x85,
-            ins: 0x11,
-            p1: 0,
-            p2: 0,
-            data,
-        };
-
-        let res = ledger.execute(get_taddress).await?;
-        assert_eq!(res.retcode, 0x9000);
-        let address: [u8; 43] = tiu!(res.data[0..43]);
-        let address = PaymentAddress::from_bytes(&address).unwrap();
-        let address = address.encode(&MainNetwork);
-        assert_eq!(address, "zs157m24pkqcq09edxz9p0p653xcsfpdpcspcad5wkkp3pq29hvc7h2uvs7wncakwqtl6jqkxn939p");
-        Ok(())
-    }
-}

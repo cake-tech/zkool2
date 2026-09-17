@@ -87,7 +87,8 @@ pub async fn issue_asset(
     // ── 2. Compute or use provided asset description hash ────────────────
     let is_reissuance = desc_hash.is_some();
     let desc_hash: [u8; 32] = if let Some(hash) = desc_hash {
-        hash.clone().try_into()
+        hash.clone()
+            .try_into()
             .map_err(|_| anyhow!("desc_hash must be exactly 32 bytes"))?
     } else {
         let name_bytes = asset_name.as_bytes().to_vec();
@@ -118,15 +119,15 @@ pub async fn issue_asset(
         &mut client,
         account,
         ALL_POOLS,
-        &[],           // no recipients — issuance output goes to issuer
-        false,         // recipient_pays_fee
-        None,          // confirmations
-        false,         // smart_transparent
-        None,          // category
+        &[],   // no recipients — issuance output goes to issuer
+        false, // recipient_pays_fee
+        None,  // confirmations
+        false, // smart_transparent
+        None,  // category
         Some(&issuance_info),
-        false,         // migration
-        crate::pay::solve::Mode::Fee,
-        None,           // preselected
+        false, // migration
+        None,  // preselected
+        None,  // anchor_height
     )
     .await?;
 
@@ -139,6 +140,7 @@ pub async fn issue_asset(
     // ── 8. Pre-insert asset into DB for sync name resolution ─────────────
     // Only needed for first issuance; reissuance already has the asset row.
     if !is_reissuance {
+        let first_seen_height = client.latest_height().await?;
         sqlx::query(
             "INSERT OR IGNORE INTO assets(asset_desc_hash, ik, asset_base, asset_name, finalized, first_seen_height)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -148,7 +150,7 @@ pub async fn issue_asset(
         .bind(&asset_base_bytes)
         .bind(&asset_name)
         .bind(finalize)
-        .bind(0_i64)
+        .bind(first_seen_height)
         .execute(&mut *connection)
         .await?;
     }

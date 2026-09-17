@@ -4,7 +4,7 @@ use std::sync::{LazyLock, OnceLock};
 use anyhow::Result;
 use arti_client::config::TorClientConfigBuilder;
 use arti_client::TorClient;
-#[cfg(feature="flutter")]
+#[cfg(feature = "flutter")]
 use flutter_rust_bridge::frb;
 use hyper_util::rt::TokioIo;
 use sqlx::pool::PoolConnection;
@@ -22,7 +22,6 @@ use crate::lwd::compact_tx_streamer_client::CompactTxStreamerClient;
 use crate::net::zebra::ZebraClient;
 use crate::{Client, IntoAnyhow};
 
-
 #[cfg_attr(feature = "flutter", frb(dart_metadata = ("freezed")))]
 #[derive(Clone)]
 pub struct Coin {
@@ -31,7 +30,9 @@ pub struct Coin {
     pub db_filepath: String,
     pub url: String,
     pub server_type: u8,
-    pub use_tor: bool,
+    /// Transport: 0 = direct, 1 = Tor (arti), 2 = Nym mixnet,
+    /// 3 = external proxy (uses `proxy`).
+    pub transport: u8,
     /// Optional external proxy URL: socks5://, socks5h://, http://, https://.
     /// Empty string means a direct connection.
     pub proxy: String,
@@ -45,7 +46,11 @@ impl Coin {
     ) -> Result<Coin> {
         let network = self.network();
 
-        let hint_coin = if self.coin != 0 { Some(self.coin) } else { None };
+        let hint_coin = if self.coin != 0 {
+            Some(self.coin)
+        } else {
+            None
+        };
         let pool = try_open(&db_filepath, &password, hint_coin).await?;
         {
             let mut pools = POOLS.lock().unwrap();
@@ -54,10 +59,13 @@ impl Coin {
 
         let mut connection = pool.acquire().await?;
 
-        let default_coin = self.coin.to_string();
+        let mut default_coin = self.coin;
+        if default_coin == 2 && self.db_filepath.to_lowercase().contains("zsa") {
+            default_coin = 3;
+        }
         let coin = crate::db::get_prop(&mut connection, "coin")
             .await?
-            .unwrap_or(default_coin);
+            .unwrap_or(default_coin.to_string());
         let coin = coin.parse::<u8>()?;
         let account = crate::db::get_prop(&mut connection, "account")
             .await?
@@ -66,6 +74,7 @@ impl Coin {
 
         migrate_sapling_addresses(&network, &mut connection).await?;
         backfill_diversifier_index(&mut connection).await?;
+        crate::account::backfill_transparent_change_addresses(&network, &mut connection).await?;
 
         Ok(Coin {
             coin,
@@ -89,27 +98,20 @@ impl Coin {
         match self.coin {
             0 => Network::Main,
             1 => Network::Test,
-            2 => {
-                let orchard_mode = if self.db_filepath.to_lowercase().contains("zsa") {
-                    OrchardMode::Zsa
-                } else {
-                    OrchardMode::Normal
-                };
-                Network::Regtest(LocalNetwork {
-                    overwinter: Some(BlockHeight::from_u32(1)),
-                    sapling: Some(BlockHeight::from_u32(1)),
-                    blossom: Some(BlockHeight::from_u32(1)),
-                    heartwood: Some(BlockHeight::from_u32(1)),
-                    canopy: Some(BlockHeight::from_u32(1)),
-                    nu5: Some(BlockHeight::from_u32(1)),
-                    nu6: Some(BlockHeight::from_u32(1)),
-                    nu6_1: Some(BlockHeight::from_u32(1)),
-                    nu6_2: Some(BlockHeight::from_u32(1)),
-                    nu6_3: Some(BlockHeight::from_u32(250)),
-                    nu7: None,
-                    orchard_mode,
-                })
-            }
+            2 => Network::Regtest(LocalNetwork {
+                overwinter: Some(BlockHeight::from_u32(1)),
+                sapling: Some(BlockHeight::from_u32(1)),
+                blossom: Some(BlockHeight::from_u32(1)),
+                heartwood: Some(BlockHeight::from_u32(1)),
+                canopy: Some(BlockHeight::from_u32(1)),
+                nu5: Some(BlockHeight::from_u32(1)),
+                nu6: Some(BlockHeight::from_u32(1)),
+                nu6_1: Some(BlockHeight::from_u32(1)),
+                nu6_2: Some(BlockHeight::from_u32(1)),
+                nu6_3: Some(BlockHeight::from_u32(250)),
+                nu7: None,
+                orchard_mode: OrchardMode::Normal,
+            }),
             3 => {
                 // ZSA regtest: NU7 active, no Ironwood (NU6.3 not active).
                 // Orchard protocol V2 with cross-address transfers enabled.
@@ -140,25 +142,30 @@ impl Coin {
 
     pub(crate) async fn get_connection(&self) -> Result<PoolConnection<Sqlite>> {
         let pool = self.get_pool()?;
-        pool.acquire().await.anyhow()
+        let start = std::time::Instant::now();
+        let result = pool.acquire().await.anyhow();
+        let elapsed = start.elapsed();
+        if elapsed > std::time::Duration::from_secs(2) {
+            tracing::warn!(
+                "slow pool acquire took {:?} (size={}, idle={})",
+                elapsed,
+                pool.size(),
+                pool.num_idle()
+            );
+        }
+        result
     }
 
     #[cfg_attr(feature = "flutter", frb)]
     pub async fn set_account(self, account: u32) -> Result<Self> {
         let mut conn = self.get_connection().await?;
         put_prop(&mut *conn, "account", &account.to_string()).await?;
-        Ok(Coin {
-            account,
-            ..self
-        })
+        Ok(Coin { account, ..self })
     }
 
-    #[cfg_attr(feature = "flutter", frb)]
-    pub fn set_use_tor(self, use_tor: bool) -> Result<Coin> {
-        Ok(Coin {
-            use_tor,
-            ..self
-        })
+    #[cfg_attr(feature = "flutter", frb(sync))]
+    pub fn set_transport(self, transport: u8) -> Result<Coin> {
+        Ok(Coin { transport, ..self })
     }
 
     #[cfg_attr(feature = "flutter", frb(sync))]
@@ -175,33 +182,67 @@ impl Coin {
         Ok(Coin { proxy, ..self })
     }
 
+    /// True when traffic to the server goes through the Nym mixnet, either
+    /// via a mixnet-native nym:// endpoint or the Nym transport. Always
+    /// false when this build has no `nym` feature.
+    pub(crate) fn is_mixnet(&self) -> bool {
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "nym")] {
+                crate::net::nym_service::parse_nym_url(&self.url).is_some() || self.transport == 2
+            } else {
+                false
+            }
+        }
+    }
+
     pub(crate) async fn client(&self) -> Result<Client> {
-        match self.server_type {
-            // lightwalletd (gRPC). Precedence: Tor (arti) > external proxy > direct.
-            0 if self.use_tor => {
-                let channel = connect_over_tor(&self.url).await?;
-                let client = CompactTxStreamerClient::new(channel);
-                Ok(Box::new(client) as Client)
-            }
-
-            0 if !self.proxy.is_empty() => {
-                let channel = connect_over_proxy(&self.url, &self.proxy).await?;
-                let client = CompactTxStreamerClient::new(channel);
-                Ok(Box::new(client) as Client)
-            }
-
-            0 => {
-                let mut channel = tonic::transport::Channel::from_shared(self.url.clone())?;
-                if self.url.starts_with("https") {
-                    let tls = ClientTlsConfig::new().with_enabled_roots();
-                    channel = channel.tls_config(tls)?;
+        #[cfg(feature = "nym")]
+        {
+            // Mixnet-native endpoint (nym:// URL, a nym-rpc service): bypasses
+            // the transport enum entirely — the mixnet IS the transport.
+            if let Some(recipient) = crate::net::nym_service::parse_nym_url(&self.url) {
+                if self.server_type != 0 {
+                    anyhow::bail!("Nym service addresses only support lightwalletd (gRPC) servers");
                 }
-                let client = CompactTxStreamerClient::connect(channel).await?;
+                let channel = crate::net::nym_service::grpc_channel(recipient).await?;
+                let client = CompactTxStreamerClient::new(channel);
+                return Ok(Box::new(client) as Client);
+            }
+        }
+        #[cfg(not(feature = "nym"))]
+        if self.url.starts_with("nym://") {
+            anyhow::bail!("Nym mixnet support is not enabled in this build");
+        }
+
+        match self.server_type {
+            // lightwalletd (gRPC): transport chosen explicitly by the enum.
+            0 => {
+                let channel = match self.transport {
+                    1 => connect_over_tor(&self.url).await?,
+                    #[cfg(feature = "nym")]
+                    2 => connect_over_nym(&self.url).await?,
+                    #[cfg(not(feature = "nym"))]
+                    2 => anyhow::bail!("Nym transport is not enabled in this build"),
+                    3 if !self.proxy.is_empty() => {
+                        connect_over_proxy(&self.url, &self.proxy).await?
+                    }
+                    _ => {
+                        let mut endpoint =
+                            tonic::transport::Channel::from_shared(self.url.clone())?;
+                        if self.url.starts_with("https") {
+                            let tls = ClientTlsConfig::new().with_enabled_roots();
+                            endpoint = endpoint.tls_config(tls)?;
+                        }
+                        endpoint.connect().await?
+                    }
+                };
+                let client = CompactTxStreamerClient::new(channel);
                 Ok(Box::new(client) as Client)
             }
 
             1 => {
-                let client = ZebraClient::new(&self.network(), &self.url, &self.proxy)?;
+                let client =
+                    ZebraClient::new(&self.network(), &self.url, self.transport, &self.proxy)?;
                 Ok(Box::new(client) as Client)
             }
 
@@ -218,7 +259,11 @@ async fn try_open(
     // Create a connection pool
     let options = get_connect_options(db_filepath, password);
     let pool = SqlitePoolOptions::new()
-        .max_connections(5)
+        // Voting proofs hold a connection for minutes at a time while the
+        // synchronizer, share tracker, and session reads run concurrently;
+        // keep headroom so a long proof cannot starve the pool (sqlx's
+        // default 30 s acquire timeout would surface as "pool timed out").
+        .max_connections(10)
         .idle_timeout(std::time::Duration::from_secs(30))
         .max_lifetime(std::time::Duration::from_secs(60 * 60))
         .connect_with(options)
@@ -299,6 +344,41 @@ async fn connect_over_tor(url: &str) -> anyhow::Result<Channel> {
     Ok(endpoint.connect_with_connector(connector).await?)
 }
 
+#[cfg(feature = "nym")]
+async fn connect_over_nym(url: &str) -> anyhow::Result<Channel> {
+    let uri = url.parse::<Uri>()?;
+
+    let host = uri
+        .host()
+        .ok_or_else(|| anyhow::anyhow!("no host"))?
+        .to_string();
+    let port = uri.port_u16().unwrap_or_else(|| {
+        if uri.scheme_str() == Some("https") {
+            443
+        } else {
+            80
+        }
+    });
+
+    let connector = service_fn(move |_dst| {
+        let host = host.clone();
+        async move {
+            // DNS + TCP both go through the mixnet; TLS (with SNI/cert
+            // checks against the hostname) runs on top via the endpoint.
+            let stream = crate::net::nym::nym_connect(&host, port).await?;
+            Ok::<_, anyhow::Error>(TokioIo::new(stream))
+        }
+    });
+
+    let mut endpoint = Endpoint::from_shared(url.to_string())?;
+    if url.starts_with("https") {
+        let tls = ClientTlsConfig::new().with_enabled_roots();
+        endpoint = endpoint.tls_config(tls)?;
+    }
+
+    Ok(endpoint.connect_with_connector(connector).await?)
+}
+
 /// Build a tonic Channel to `url` whose TCP connection is established through an
 /// external proxy. Supports socks5://, socks5h://, http:// and https:// proxies.
 async fn connect_over_proxy(url: &str, proxy: &str) -> anyhow::Result<Channel> {
@@ -353,34 +433,60 @@ pub(crate) async fn open_proxied_stream(
         _ => 8080,
     });
 
+    // Extract credentials from the authority (user:pass@host:port).
+    // http::Uri::host() already strips the userinfo, so phost/pport are fine;
+    // we only need the raw authority string to pull out the userinfo prefix.
+    let creds: Option<(String, String)> = puri
+        .authority()
+        .and_then(|a| a.as_str().rfind('@').map(|at| &a.as_str()[..at]))
+        .map(|userinfo| {
+            let (u, p) = userinfo.split_once(':').unwrap_or((userinfo, ""));
+            (u.to_string(), p.to_string())
+        });
+
     match scheme.as_str() {
         // socks5h => resolve the target hostname *at the proxy* (remote DNS).
         // This is what allows .onion addresses to work and prevents DNS leaks,
         // so it is the recommended scheme for Tor.
         "socks5h" => {
-            let stream = tokio_socks::tcp::Socks5Stream::connect(
-                (phost, pport),
-                // Passing a &str target makes tokio-socks send the hostname to
-                // the proxy as a SOCKS5 DOMAINNAME request (proxy-side DNS).
-                (target_host, target_port),
-            )
-            .await?;
+            let stream = match &creds {
+                Some((u, p)) => tokio_socks::tcp::Socks5Stream::connect_with_password(
+                    (phost, pport),
+                    // Passing a &str target makes tokio-socks send the hostname to
+                    // the proxy as a SOCKS5 DOMAINNAME request (proxy-side DNS).
+                    (target_host, target_port),
+                    u.as_str(),
+                    p.as_str(),
+                )
+                .await?,
+                None => tokio_socks::tcp::Socks5Stream::connect(
+                    (phost, pport),
+                    (target_host, target_port),
+                )
+                .await?,
+            };
             Ok(stream.into_inner())
         }
         // socks5 => resolve the target hostname locally and send the IP to the
         // proxy. We resolve here explicitly so the distinction from socks5h is
         // honoured even though tokio-socks would otherwise defer to the proxy.
         "socks5" => {
-            let mut addrs =
-                tokio::net::lookup_host((target_host, target_port)).await?;
+            let mut addrs = tokio::net::lookup_host((target_host, target_port)).await?;
             let target_addr = addrs
                 .next()
                 .ok_or_else(|| anyhow::anyhow!("could not resolve {target_host}"))?;
-            let stream = tokio_socks::tcp::Socks5Stream::connect(
-                (phost, pport),
-                target_addr,
-            )
-            .await?;
+            let stream = match &creds {
+                Some((u, p)) => tokio_socks::tcp::Socks5Stream::connect_with_password(
+                    (phost, pport),
+                    target_addr,
+                    u.as_str(),
+                    p.as_str(),
+                )
+                .await?,
+                None => {
+                    tokio_socks::tcp::Socks5Stream::connect((phost, pport), target_addr).await?
+                }
+            };
             Ok(stream.into_inner())
         }
         "http" | "https" => http_connect_tunnel(phost, pport, target_host, target_port).await,
@@ -448,7 +554,7 @@ impl Coin {
             db_filepath: String::new(),
             server_type: 0,
             url: String::new(),
-            use_tor: false,
+            transport: 0,
             proxy: String::new(),
         }
     }

@@ -2,7 +2,7 @@ use anyhow::Result;
 use tokio::runtime::Runtime;
 pub use tokio_util::sync::CancellationToken;
 
-use crate::{api::coin::Coin};
+use crate::api::coin::Coin;
 #[cfg(feature = "flutter")]
 use crate::frb_generated::StreamSink;
 #[cfg(feature = "flutter")]
@@ -12,7 +12,7 @@ use flutter_rust_bridge::frb;
 async fn run_mempool(
     mempool_sink: StreamSink<MempoolMsg>,
     cancel_token: CancellationToken,
-    c: &Coin
+    c: &Coin,
 ) -> Result<()> {
     let mut connection = c.get_connection().await?;
     let r = crate::mempool::run_mempool(
@@ -26,7 +26,7 @@ async fn run_mempool(
     match r {
         Ok(_) => {}
         Err(e) => {
-            tracing::error!("Error running mempool: {}", e);
+            tracing::error!("Error running mempool: {:#}", e);
             return Err(e);
         }
     }
@@ -96,7 +96,7 @@ impl Mempool {
         self.cancel_token = Some(ct.clone());
         self.runtime.spawn(async move {
             if let Err(e) = run_mempool(mempool_sink, ct, &c).await {
-                tracing::error!("Error running mempool: {}", e);
+                tracing::error!("Error running mempool: {:#}", e);
             }
         });
         Ok(())

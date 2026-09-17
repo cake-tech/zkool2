@@ -1,11 +1,10 @@
 use anyhow::Result;
-use bincode::{config::legacy, Decode, Encode};
+use bincode::{config::standard, Decode, Encode};
 
-use crate::{api::coin::Coin, pay::{Recipient, TxPlan, plan::plan_transaction, solve::Mode}};
-
-/// FFI-compatible coin-selection mode (maps to `solve::Mode`).
-/// 0 = Fee optimisation, 1 = Privacy preservation (default).
-const MODE_FEE: u8 = 0;
+use crate::{
+    api::coin::Coin,
+    pay::{plan::plan_transaction, Recipient, TxPlan},
+};
 #[cfg(feature = "flutter")]
 use flutter_rust_bridge::frb;
 
@@ -14,8 +13,6 @@ pub struct PaymentOptions {
     pub recipient_pays_fee: bool,
     pub smart_transparent: bool,
     pub category: Option<u32>,
-    /// Coin-selection mode: 0 = fee minimisation, 1 = privacy preservation.
-    pub mode: u8,
 }
 
 #[cfg_attr(feature = "flutter", frb)]
@@ -24,13 +21,15 @@ pub async fn build_puri(recipients: &[Recipient]) -> Result<String> {
 }
 
 #[cfg_attr(feature = "flutter", frb)]
-pub async fn prepare(recipients: &[Recipient], options: PaymentOptions, c: &Coin) -> Result<PcztPackage> {
+pub async fn prepare(
+    recipients: &[Recipient],
+    options: PaymentOptions,
+    c: &Coin,
+) -> Result<PcztPackage> {
     let account = c.account;
     let network = &c.network();
     let mut connection = c.get_connection().await?;
     let mut client = c.client().await?;
-
-    let mode = if options.mode == MODE_FEE { Mode::Fee } else { Mode::Privacy };
 
     plan_transaction(
         network,
@@ -43,10 +42,10 @@ pub async fn prepare(recipients: &[Recipient], options: PaymentOptions, c: &Coin
         None,
         options.smart_transparent,
         options.category,
-        None, // issuance — normal sends have no issuance
+        None,  // issuance — normal sends have no issuance
         false, // migration — only used by note migration
-        mode,
         None,  // preselected
+        None,  // anchor_height
     )
     .await
 }
@@ -72,13 +71,13 @@ pub async fn prepare_migration(
         src_pools,
         recipients,
         false, // recipient_pays_fee
-        None,   // confirmations
-        false,  // smart_transparent
-        None,   // category
-        None,   // issuance
-        true,   // migration
-        Mode::Fee,
+        None,  // confirmations
+        false, // smart_transparent
+        None,  // category
+        None,  // issuance
+        true,  // migration
         None,  // preselected
+        None,  // anchor_height
     )
     .await
 }
@@ -95,9 +94,84 @@ pub async fn sign_transaction(pczt: &PcztPackage, c: &Coin) -> Result<PcztPackag
 }
 
 #[cfg_attr(feature = "flutter", frb)]
+#[derive(Debug, Clone)]
 pub enum SigningEvent {
     Progress(String),
     Result(PcztPackage),
+}
+
+/// Proves and finalizes a PCZT signed by an external airgapped signer
+/// (Keystone, Cupcake). Uses no spending keys, so it works on watch-only
+/// accounts; pass the result to [`extract_transaction`] to broadcast.
+#[cfg_attr(feature = "flutter", frb)]
+pub async fn prove_and_finalize(pczt: &PcztPackage, c: &Coin) -> Result<PcztPackage> {
+    let network = c.network();
+
+    let tx = crate::pay::plan::prove_and_finalize(&network, pczt).await?;
+
+    Ok(tx)
+}
+
+/// Rewrites a PCZT into the encoding a Keystone reads.
+///
+/// Cake pins an older `pczt` than the device's firmware, and the two disagree
+/// on enough of the v2 layout that each silently misreads the other. Translate
+/// on the way out, and [`pczt_from_keystone`] on the way back.
+#[cfg_attr(feature = "flutter", frb)]
+pub fn pczt_to_keystone(pczt: Vec<u8>) -> Result<Vec<u8>> {
+    crate::keystone_wire::to_keystone(&pczt).map_err(|e| anyhow::anyhow!(e))
+}
+
+/// Rewrites a PCZT signed by a Keystone back into the encoding Cake uses.
+#[cfg_attr(feature = "flutter", frb)]
+pub fn pczt_from_keystone(pczt: Vec<u8>) -> Result<Vec<u8>> {
+    crate::keystone_wire::from_keystone(&pczt).map_err(|e| anyhow::anyhow!(e))
+}
+
+/// Rewrites a PCZT into the encoding the Cupcake signer reads.
+///
+/// Cupcake parses PCZTs with an older `pczt` than this wallet writes; the
+/// layouts share a name but not their fields, so send it this rather than the
+/// wallet's own bytes.
+#[cfg_attr(feature = "flutter", frb)]
+pub fn pczt_to_cupcake(pczt: Vec<u8>) -> Result<Vec<u8>> {
+    crate::keystone_wire::to_cupcake(&pczt).map_err(|e| anyhow::anyhow!(e))
+}
+
+/// Rewrites a PCZT signed by the Cupcake signer back into the encoding this
+/// wallet uses. [`prove_and_finalize`] also accepts one directly.
+#[cfg_attr(feature = "flutter", frb)]
+pub fn pczt_from_cupcake(pczt: Vec<u8>) -> Result<Vec<u8>> {
+    crate::keystone_wire::from_cupcake(&pczt).map_err(|e| anyhow::anyhow!(e))
+}
+
+/// Takes a Keystone's signatures into the PCZT this wallet built.
+///
+/// The device redacts prover-only fields, so its reply cannot be proved on its
+/// own; `original` supplies those, `signed` supplies only the signatures.
+#[cfg_attr(feature = "flutter", frb)]
+pub fn pczt_apply_keystone_signatures(original: Vec<u8>, signed: Vec<u8>) -> Result<Vec<u8>> {
+    crate::keystone_wire::apply_signatures(&original, &signed).map_err(|e| anyhow::anyhow!(e))
+}
+
+/// Builds a `zcash-sign-batch` request for a Keystone from one or more PCZTs in
+/// Cake's dialect.
+///
+/// The batch path returns only signatures rather than a whole PCZT, so the reply
+/// is far smaller over animated QR. It carries shielded spends only; a PCZT with
+/// transparent inputs (a shield) must use the single [`pczt_to_keystone`] path.
+#[cfg_attr(feature = "flutter", frb)]
+pub fn pczt_to_batch_request(pczts: Vec<Vec<u8>>) -> Result<Vec<u8>> {
+    crate::keystone_wire::to_batch_request(&pczts).map_err(|e| anyhow::anyhow!(e))
+}
+
+/// Takes a Keystone's `zcash-batch-sig-result` reply into the PCZT this wallet
+/// built. `original` is the single PCZT sent in the batch; `response` carries
+/// only its spend-auth signatures.
+#[cfg_attr(feature = "flutter", frb)]
+pub fn pczt_apply_batch_signatures(original: Vec<u8>, response: Vec<u8>) -> Result<Vec<u8>> {
+    crate::keystone_wire::apply_batch_sig_result(&original, &response)
+        .map_err(|e| anyhow::anyhow!(e))
 }
 
 #[cfg_attr(feature = "flutter", frb)]
@@ -106,7 +180,7 @@ pub async fn extract_transaction(package: &PcztPackage) -> Result<Vec<u8>> {
 }
 
 #[cfg_attr(feature = "flutter", frb(dart_metadata = ("freezed")))]
-#[derive(Encode, Decode)]
+#[derive(Debug, Clone, Encode, Decode)]
 pub struct PcztPackage {
     pub pczt: Vec<u8>,
     pub n_spends: [usize; 4],
@@ -121,14 +195,20 @@ pub struct PcztPackage {
 }
 
 #[cfg_attr(feature = "flutter", frb)]
+/// Serialize a PCZT for transport between participants.
+///
+/// Uses bincode's `standard()` config so the bytes are interchangeable with
+/// zkool_graphql, whose `prepareSend` / `frostSign` use the same config. The
+/// two used to disagree (`legacy()` here), which made it impossible for an app
+/// user and a zkool_graphql user to co-sign a FROST transaction.
 pub fn pack_transaction(pczt: &PcztPackage) -> Result<Vec<u8>> {
-    let pkg = bincode::encode_to_vec(pczt, legacy())?;
+    let pkg = bincode::encode_to_vec(pczt, standard())?;
     Ok(pkg)
 }
 
 #[cfg_attr(feature = "flutter", frb)]
 pub fn unpack_transaction(bytes: &[u8]) -> Result<PcztPackage> {
-    let (pkg, _) = bincode::decode_from_slice(bytes, legacy())?;
+    let (pkg, _) = bincode::decode_from_slice(bytes, standard())?;
     Ok(pkg)
 }
 
@@ -137,6 +217,8 @@ pub async fn broadcast_transaction(height: u32, tx_bytes: &[u8], c: &Coin) -> Re
     let mut client = c.client().await?;
 
     let tx = crate::pay::send(&mut client, height, tx_bytes).await?;
+    let mut connection = c.get_connection().await?;
+    crate::pay::lock_spent_notes(&mut connection, c.account, tx_bytes).await?;
     Ok(tx)
 }
 
@@ -150,37 +232,23 @@ pub async fn send(height: u32, data: &[u8], c: &Coin) -> Result<String> {
     let mut client = c.client().await?;
 
     let tx = crate::pay::send(&mut client, height, data).await?;
+    let mut connection = c.get_connection().await?;
+    crate::pay::lock_spent_notes(&mut connection, c.account, data).await?;
     Ok(tx)
 }
 
 #[cfg_attr(feature = "flutter", frb)]
-pub async fn store_pending_tx(height: u32, txid: &[u8],
-    price: Option<f64>, category: Option<u32>, c: &Coin) -> Result<()> {
+pub async fn store_pending_tx(
+    height: u32,
+    txid: &[u8],
+    price: Option<f64>,
+    category: Option<u32>,
+    c: &Coin,
+) -> Result<()> {
     let mut connection = c.get_connection().await?;
     crate::db::store_pending_tx(&mut connection, c.account, height, txid, price, category).await?;
 
     Ok(())
-}
-
-/// Get the persisted coin-selection mode preference.
-/// Returns 0 for fee optimisation, 1 for privacy preservation.
-#[cfg_attr(feature = "flutter", frb)]
-pub async fn get_coin_selection_mode(c: &Coin) -> Result<u8> {
-    let mut connection = c.get_connection().await?;
-    let mode = crate::db::get_coin_selection_mode(&mut connection).await?;
-    Ok(match mode {
-        Mode::Fee => 0,
-        Mode::Privacy => 1,
-    })
-}
-
-/// Persist the coin-selection mode preference.
-/// Pass 0 for fee optimisation, 1 for privacy preservation.
-#[cfg_attr(feature = "flutter", frb)]
-pub async fn set_coin_selection_mode(mode: u8, c: &Coin) -> Result<()> {
-    let mut connection = c.get_connection().await?;
-    let mode = if mode == MODE_FEE { Mode::Fee } else { Mode::Privacy };
-    crate::db::set_coin_selection_mode(&mut connection, mode).await
 }
 
 #[cfg_attr(feature = "flutter", frb(sync))]
