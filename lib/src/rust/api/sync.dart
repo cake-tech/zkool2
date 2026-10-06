@@ -6,36 +6,43 @@
 import '../frb_generated.dart';
 import '../io.dart';
 import 'coin.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `fmt`
 
-Stream<SyncProgress> synchronize(
-        {required List<int> accounts,
-        required int currentHeight,
-        required int actionsPerSync,
-        required int transparentLimit,
-        required int checkpointAge,
-        required bool fast,
-        required Coin c}) =>
-    RustLib.instance.api.crateApiSyncSynchronize(
-        accounts: accounts,
-        currentHeight: currentHeight,
-        actionsPerSync: actionsPerSync,
-        transparentLimit: transparentLimit,
-        checkpointAge: checkpointAge,
-        fast: fast,
-        c: c);
+Stream<SyncProgress> synchronize({
+  required List<int> accounts,
+  required int currentHeight,
+  required int actionsPerSync,
+  required int transparentLimit,
+  required int checkpointAge,
+  required bool fast,
+  required Coin c,
+}) => RustLib.instance.api.crateApiSyncSynchronize(
+  accounts: accounts,
+  currentHeight: currentHeight,
+  actionsPerSync: actionsPerSync,
+  transparentLimit: transparentLimit,
+  checkpointAge: checkpointAge,
+  fast: fast,
+  c: c,
+);
 
 Future<PoolBalance> balance({required Coin c}) =>
     RustLib.instance.api.crateApiSyncBalance(c: c);
 
 Future<void> cancelSync() => RustLib.instance.api.crateApiSyncCancelSync();
 
-Future<void> rewindSync(
-        {required int height, required int account, required Coin c}) =>
-    RustLib.instance.api
-        .crateApiSyncRewindSync(height: height, account: account, c: c);
+Future<void> rewindSync({
+  required int height,
+  required int account,
+  required Coin c,
+}) => RustLib.instance.api.crateApiSyncRewindSync(
+  height: height,
+  account: account,
+  c: c,
+);
 
 Future<SyncHeight> getDbHeight({required Coin c}) =>
     RustLib.instance.api.crateApiSyncGetDbHeight(c: c);
@@ -51,17 +58,20 @@ Future<SyncHeight> getDbHeight({required Coin c}) =>
 Future<void> fetchTxDetails({required int account, required Coin c}) =>
     RustLib.instance.api.crateApiSyncFetchTxDetails(account: account, c: c);
 
-Future<void> cacheBlockTime(
-        {required int account, required int height, required Coin c}) =>
-    RustLib.instance.api
-        .crateApiSyncCacheBlockTime(account: account, height: height, c: c);
+Future<void> cacheBlockTime({
+  required int account,
+  required int height,
+  required Coin c,
+}) => RustLib.instance.api.crateApiSyncCacheBlockTime(
+  account: account,
+  height: height,
+  c: c,
+);
 
 class PoolBalance {
   final Uint64List field0;
 
-  const PoolBalance({
-    required this.field0,
-  });
+  const PoolBalance({required this.field0});
 
   @override
   int get hashCode => field0.hashCode;
@@ -78,10 +88,7 @@ class SyncProgress {
   final int height;
   final int time;
 
-  const SyncProgress({
-    required this.height,
-    required this.time,
-  });
+  const SyncProgress({required this.height, required this.time});
 
   @override
   int get hashCode => height.hashCode ^ time.hashCode;

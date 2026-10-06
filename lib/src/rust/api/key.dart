@@ -5,6 +5,7 @@
 
 import '../frb_generated.dart';
 import 'coin.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 String generateSeed() => RustLib.instance.api.crateApiKeyGenerateSeed();
@@ -22,8 +23,10 @@ bool isValidAddress({required String address}) =>
     RustLib.instance.api.crateApiKeyIsValidAddress(address: address);
 
 bool isValidTransparentAddress({required String address, required Coin c}) =>
-    RustLib.instance.api
-        .crateApiKeyIsValidTransparentAddress(address: address, c: c);
+    RustLib.instance.api.crateApiKeyIsValidTransparentAddress(
+      address: address,
+      c: c,
+    );
 
 bool isTexAddress({required String address, required Coin c}) =>
     RustLib.instance.api.crateApiKeyIsTexAddress(address: address, c: c);

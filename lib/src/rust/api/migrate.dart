@@ -5,6 +5,7 @@
 
 import '../frb_generated.dart';
 import 'coin.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'migrate.freezed.dart';
@@ -38,17 +39,14 @@ abstract class NoteMigration implements RustOpaqueInterface {
 sealed class MigrationEvent with _$MigrationEvent {
   const MigrationEvent._();
 
-  const factory MigrationEvent.splitComplete({
-    required BigInt fee,
-  }) = MigrationEvent_SplitComplete;
-  const factory MigrationEvent.migrateComplete({
-    required BigInt fee,
-  }) = MigrationEvent_MigrateComplete;
+  const factory MigrationEvent.splitComplete({required BigInt fee}) =
+      MigrationEvent_SplitComplete;
+  const factory MigrationEvent.migrateComplete({required BigInt fee}) =
+      MigrationEvent_MigrateComplete;
   const factory MigrationEvent.complete() = MigrationEvent_Complete;
   const factory MigrationEvent.nothingToDo() = MigrationEvent_NothingToDo;
-  const factory MigrationEvent.error({
-    required String message,
-  }) = MigrationEvent_Error;
+  const factory MigrationEvent.error({required String message}) =
+      MigrationEvent_Error;
 }
 
 /// Current migration status — streamed to Flutter by run_migration().

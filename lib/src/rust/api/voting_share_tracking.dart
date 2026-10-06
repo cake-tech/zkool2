@@ -5,6 +5,7 @@
 
 import '../frb_generated.dart';
 import 'coin.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'voting_share_tracking.freezed.dart';
@@ -13,36 +14,42 @@ part 'voting_share_tracking.freezed.dart';
 
 /// Lists the current wallet's durable share-recovery work. This is empty when
 /// resuming the app has nothing to do.
-Future<List<VotingPendingShareRound>> votingPendingShareRounds(
-        {required Coin c}) =>
-    RustLib.instance.api
-        .crateApiVotingShareTrackingVotingPendingShareRounds(c: c);
+Future<List<VotingPendingShareRound>> votingPendingShareRounds({
+  required Coin c,
+}) => RustLib.instance.api.crateApiVotingShareTrackingVotingPendingShareRounds(
+  c: c,
+);
 
 /// Starts durable helper-share tracking for a round. The caller supplies the
 /// freshly resolved helper fleet and vote-end boundary; the sidecar supplies
 /// the selected wallet transport and owns the cancellable background task.
-Future<bool> votingStartShareTracking(
-        {required String roundId,
-        required List<String> helperUrls,
-        BigInt? voteEndTimeSeconds,
-        required Coin c}) =>
-    RustLib.instance.api.crateApiVotingShareTrackingVotingStartShareTracking(
-        roundId: roundId,
-        helperUrls: helperUrls,
-        voteEndTimeSeconds: voteEndTimeSeconds,
-        c: c);
+Future<bool> votingStartShareTracking({
+  required String roundId,
+  required List<String> helperUrls,
+  BigInt? voteEndTimeSeconds,
+  required Coin c,
+}) => RustLib.instance.api.crateApiVotingShareTrackingVotingStartShareTracking(
+  roundId: roundId,
+  helperUrls: helperUrls,
+  voteEndTimeSeconds: voteEndTimeSeconds,
+  c: c,
+);
 
 /// Cancels one round's share-tracking task. Pending shares remain durable and
 /// can be resumed safely on the next foreground lifecycle transition.
-Future<bool> votingCancelShareTracking(
-        {required String roundId, required Coin c}) =>
-    RustLib.instance.api.crateApiVotingShareTrackingVotingCancelShareTracking(
-        roundId: roundId, c: c);
+Future<bool> votingCancelShareTracking({
+  required String roundId,
+  required Coin c,
+}) => RustLib.instance.api.crateApiVotingShareTrackingVotingCancelShareTracking(
+  roundId: roundId,
+  c: c,
+);
 
 /// Cancels every live share-tracking task for the current wallet.
-Future<BigInt> votingCancelAllShareTracking({required Coin c}) =>
-    RustLib.instance.api
-        .crateApiVotingShareTrackingVotingCancelAllShareTracking(c: c);
+Future<BigInt> votingCancelAllShareTracking({required Coin c}) => RustLib
+    .instance
+    .api
+    .crateApiVotingShareTrackingVotingCancelAllShareTracking(c: c);
 
 /// Runs exactly one helper-share tracking pass for a round and returns how many
 /// shares it confirmed.
@@ -51,16 +58,17 @@ Future<BigInt> votingCancelAllShareTracking({required Coin c}) =>
 /// caller polls it while the round is open, so confirmation advances every pass
 /// without a long-lived in-process run. Everything the pass needs comes from
 /// the arguments and the durable sidecar.
-Future<int> votingTrackSharesOnce(
-        {required String roundId,
-        required List<String> helperUrls,
-        BigInt? voteEndTimeSeconds,
-        required Coin c}) =>
-    RustLib.instance.api.crateApiVotingShareTrackingVotingTrackSharesOnce(
-        roundId: roundId,
-        helperUrls: helperUrls,
-        voteEndTimeSeconds: voteEndTimeSeconds,
-        c: c);
+Future<int> votingTrackSharesOnce({
+  required String roundId,
+  required List<String> helperUrls,
+  BigInt? voteEndTimeSeconds,
+  required Coin c,
+}) => RustLib.instance.api.crateApiVotingShareTrackingVotingTrackSharesOnce(
+  roundId: roundId,
+  helperUrls: helperUrls,
+  voteEndTimeSeconds: voteEndTimeSeconds,
+  c: c,
+);
 
 /// A round whose persisted helper shares need a foreground retry worker.
 @freezed

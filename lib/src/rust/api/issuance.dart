@@ -5,6 +5,7 @@
 
 import '../frb_generated.dart';
 import 'coin.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `IssuanceInfo`
@@ -27,19 +28,20 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 ///
 /// # Returns
 /// Serialized transaction bytes, ready for broadcast via `api::pay::broadcast_transaction`.
-Future<Uint8List> issueAsset(
-        {required String assetName,
-        required BigInt amount,
-        required bool firstIssuance,
-        required bool finalize,
-        Uint8List? descHash,
-        required int idAccount,
-        required Coin c}) =>
-    RustLib.instance.api.crateApiIssuanceIssueAsset(
-        assetName: assetName,
-        amount: amount,
-        firstIssuance: firstIssuance,
-        finalize: finalize,
-        descHash: descHash,
-        idAccount: idAccount,
-        c: c);
+Future<Uint8List> issueAsset({
+  required String assetName,
+  required BigInt amount,
+  required bool firstIssuance,
+  required bool finalize,
+  Uint8List? descHash,
+  required int idAccount,
+  required Coin c,
+}) => RustLib.instance.api.crateApiIssuanceIssueAsset(
+  assetName: assetName,
+  amount: amount,
+  firstIssuance: firstIssuance,
+  finalize: finalize,
+  descHash: descHash,
+  idAccount: idAccount,
+  c: c,
+);

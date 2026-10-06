@@ -5,6 +5,7 @@
 
 import '../frb_generated.dart';
 import 'coin.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'network.freezed.dart';
@@ -20,26 +21,38 @@ Future<bool> isIronwoodActive({required Coin c}) =>
 Future<int> getCurrentHeight({required Coin c}) =>
     RustLib.instance.api.crateApiNetworkGetCurrentHeight(c: c);
 
-Future<double> getCoingeckoPrice(
-        {required String api, required String currency, required Coin c}) =>
-    RustLib.instance.api
-        .crateApiNetworkGetCoingeckoPrice(api: api, currency: currency, c: c);
+Future<double> getCoingeckoPrice({
+  required String api,
+  required String currency,
+  required Coin c,
+}) => RustLib.instance.api.crateApiNetworkGetCoingeckoPrice(
+  api: api,
+  currency: currency,
+  c: c,
+);
 
-Future<List<String>> getSupportedVsCurrencies(
-        {required String api, required Coin c}) =>
-    RustLib.instance.api
-        .crateApiNetworkGetSupportedVsCurrencies(api: api, c: c);
+Future<List<String>> getSupportedVsCurrencies({
+  required String api,
+  required Coin c,
+}) => RustLib.instance.api.crateApiNetworkGetSupportedVsCurrencies(
+  api: api,
+  c: c,
+);
 
 /// Returns the ZEC price in both `from_currency` and `to_currency`.
 /// The exchange rate from `from_currency` to `to_currency` can be computed as
 /// `to_price / from_price`.
-Future<ExchangeRate> getExchangeRate(
-        {required String api,
-        required String fromCurrency,
-        required String toCurrency,
-        required Coin c}) =>
-    RustLib.instance.api.crateApiNetworkGetExchangeRate(
-        api: api, fromCurrency: fromCurrency, toCurrency: toCurrency, c: c);
+Future<ExchangeRate> getExchangeRate({
+  required String api,
+  required String fromCurrency,
+  required String toCurrency,
+  required Coin c,
+}) => RustLib.instance.api.crateApiNetworkGetExchangeRate(
+  api: api,
+  fromCurrency: fromCurrency,
+  toCurrency: toCurrency,
+  c: c,
+);
 
 Future<String> getNetworkName({required Coin c}) =>
     RustLib.instance.api.crateApiNetworkGetNetworkName(c: c);
@@ -49,6 +62,9 @@ Future<List<LWDInfo>> queryLwdList({required int coin}) =>
 
 /// True when `url` is a mixnet-native server address
 /// (`nym://<identity>.<encryption>@<gateway>`).
+///
+/// Always exported so the generated bindings do not depend on the `nym`
+/// feature; without it no URL is a mixnet address.
 bool isValidNymUrl({required String url}) =>
     RustLib.instance.api.crateApiNetworkIsValidNymUrl(url: url);
 

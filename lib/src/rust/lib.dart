@@ -4,6 +4,7 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import 'frb_generated.dart';
+
 import 'package:collection/collection.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
@@ -14,9 +15,7 @@ class UsizeArray4 extends NonGrowableListView<BigInt> {
   Uint64List get inner => _inner;
   final Uint64List _inner;
 
-  UsizeArray4(this._inner)
-      : assert(_inner.length == arraySize),
-        super(_inner);
+  UsizeArray4(this._inner) : assert(_inner.length == arraySize), super(_inner);
 
   UsizeArray4.init() : this(Uint64List(arraySize));
 }

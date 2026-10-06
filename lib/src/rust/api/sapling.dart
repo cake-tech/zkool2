@@ -4,6 +4,7 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../frb_generated.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `download_and_verify`, `resolve_params_dir`, `set_sapling_params_dir`
@@ -28,9 +29,7 @@ Future<void> downloadSaplingParams() =>
 class SaplingParamsStatus {
   final bool downloaded;
 
-  const SaplingParamsStatus({
-    required this.downloaded,
-  });
+  const SaplingParamsStatus({required this.downloaded});
 
   @override
   int get hashCode => downloaded.hashCode;

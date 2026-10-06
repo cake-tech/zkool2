@@ -5,6 +5,7 @@
 
 import '../frb_generated.dart';
 import 'coin.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'plugin.freezed.dart';
@@ -22,18 +23,26 @@ Future<void> removePlugin({required String id, required Coin c}) =>
     RustLib.instance.api.crateApiPluginRemovePlugin(id: id, c: c);
 
 /// Enable or disable a plugin.
-Future<void> setPluginEnabled(
-        {required String id, required bool enabled, required Coin c}) =>
-    RustLib.instance.api
-        .crateApiPluginSetPluginEnabled(id: id, enabled: enabled, c: c);
+Future<void> setPluginEnabled({
+  required String id,
+  required bool enabled,
+  required Coin c,
+}) => RustLib.instance.api.crateApiPluginSetPluginEnabled(
+  id: id,
+  enabled: enabled,
+  c: c,
+);
 
 /// Parse a memo with all matching plugins.
 /// `memo_bytes` is the full 512-byte memo (including the 0xFF type byte).
 /// Returns sections from all plugins whose prefixes match.
-Future<List<MemoSection>> parseMemoWithPlugins(
-        {required List<int> memoBytes, required Coin c}) =>
-    RustLib.instance.api
-        .crateApiPluginParseMemoWithPlugins(memoBytes: memoBytes, c: c);
+Future<List<MemoSection>> parseMemoWithPlugins({
+  required List<int> memoBytes,
+  required Coin c,
+}) => RustLib.instance.api.crateApiPluginParseMemoWithPlugins(
+  memoBytes: memoBytes,
+  c: c,
+);
 
 /// Initialize the plugin system at app startup (creates plugins directory).
 void initPlugins() => RustLib.instance.api.crateApiPluginInitPlugins();
@@ -41,18 +50,14 @@ void initPlugins() => RustLib.instance.api.crateApiPluginInitPlugins();
 /// A single typed cell in a memo table.
 @freezed
 sealed class MemoCell with _$MemoCell {
-  const factory MemoCell({
-    required String cellType,
-    required String value,
-  }) = _MemoCell;
+  const factory MemoCell({required String cellType, required String value}) =
+      _MemoCell;
 }
 
 /// A row of cells in a memo section.
 @freezed
 sealed class MemoRow with _$MemoRow {
-  const factory MemoRow({
-    required List<MemoCell> cells,
-  }) = _MemoRow;
+  const factory MemoRow({required List<MemoCell> cells}) = _MemoRow;
 }
 
 /// A parsed memo section — a titled table.

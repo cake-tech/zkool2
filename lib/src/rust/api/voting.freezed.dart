@@ -529,7 +529,7 @@ class _VotingProposalListItem implements VotingProposalListItem {
   const _VotingProposalListItem(
       {required this.proposalId,
       required this.title,
-      required final List<String> options})
+      required List<String> options})
       : _options = options;
 
   @override
@@ -980,8 +980,8 @@ class _VotingRoundListItem implements VotingRoundListItem {
       this.snapshotHeight,
       required this.bundleCount,
       required this.action,
-      required final List<VotingProposalListItem> proposals,
-      required final List<String> helperUrls,
+      required List<VotingProposalListItem> proposals,
+      required List<String> helperUrls,
       this.voteEndTime})
       : _proposals = proposals,
         _helperUrls = helperUrls;

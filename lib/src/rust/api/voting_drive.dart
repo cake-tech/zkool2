@@ -5,6 +5,7 @@
 
 import '../frb_generated.dart';
 import 'coin.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'voting_drive.freezed.dart';
@@ -20,16 +21,17 @@ part 'voting_drive.freezed.dart';
 /// bundle rows the driver quiesces with `needs_bundle_setup` and nothing can
 /// be planned. Safe to repeat; existing bundle rows are reused when they
 /// still match the current note set.
-Future<VotingEligibilityPreview> votingPrepareRound(
-        {required String roundId,
-        required String lightwalletdUrl,
-        required String roundName,
-        required Coin c}) =>
-    RustLib.instance.api.crateApiVotingDriveVotingPrepareRound(
-        roundId: roundId,
-        lightwalletdUrl: lightwalletdUrl,
-        roundName: roundName,
-        c: c);
+Future<VotingEligibilityPreview> votingPrepareRound({
+  required String roundId,
+  required String lightwalletdUrl,
+  required String roundName,
+  required Coin c,
+}) => RustLib.instance.api.crateApiVotingDriveVotingPrepareRound(
+  roundId: roundId,
+  lightwalletdUrl: lightwalletdUrl,
+  roundName: roundName,
+  c: c,
+);
 
 /// Starts driving one round: delegation (if still owed), vote casting, chain
 /// submission, and share handoff.
@@ -37,27 +39,33 @@ Future<VotingEligibilityPreview> votingPrepareRound(
 /// Returns false when a run is already live for this wallet and round. The
 /// run is idempotent and resumable: every step is planned from durable
 /// sidecar state, so restarting after a crash or cancel is always safe.
-Future<bool> votingDriveStart(
-        {required String roundId,
-        required String lightwalletdUrl,
-        required String roundName,
-        required Coin c}) =>
-    RustLib.instance.api.crateApiVotingDriveVotingDriveStart(
-        roundId: roundId,
-        lightwalletdUrl: lightwalletdUrl,
-        roundName: roundName,
-        c: c);
+Future<bool> votingDriveStart({
+  required String roundId,
+  required String lightwalletdUrl,
+  required String roundName,
+  required Coin c,
+}) => RustLib.instance.api.crateApiVotingDriveVotingDriveStart(
+  roundId: roundId,
+  lightwalletdUrl: lightwalletdUrl,
+  roundName: roundName,
+  c: c,
+);
 
 /// Polls one round's driver run; idle when nothing was started or it finished.
-Future<VotingDriveStatus> votingDriveStatus(
-        {required String roundId, required Coin c}) =>
-    RustLib.instance.api
-        .crateApiVotingDriveVotingDriveStatus(roundId: roundId, c: c);
+Future<VotingDriveStatus> votingDriveStatus({
+  required String roundId,
+  required Coin c,
+}) => RustLib.instance.api.crateApiVotingDriveVotingDriveStatus(
+  roundId: roundId,
+  c: c,
+);
 
 /// Cancels one round's driver run, waking any in-flight retry wait.
 Future<bool> votingDriveCancel({required String roundId, required Coin c}) =>
-    RustLib.instance.api
-        .crateApiVotingDriveVotingDriveCancel(roundId: roundId, c: c);
+    RustLib.instance.api.crateApiVotingDriveVotingDriveCancel(
+      roundId: roundId,
+      c: c,
+    );
 
 /// Cancels every live driver run for the current wallet, leaving other
 /// wallets untouched. Wallet switch and backgrounding call this so no run

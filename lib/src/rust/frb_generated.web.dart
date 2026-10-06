@@ -14,6 +14,7 @@ import 'api/frost.dart';
 import 'api/init.dart';
 import 'api/issuance.dart';
 import 'api/key.dart';
+import 'api/ledger.dart';
 import 'api/mempool.dart';
 import 'api/migrate.dart';
 import 'api/network.dart';
@@ -30,12 +31,16 @@ import 'api/voting.dart';
 import 'api/voting_drive.dart';
 import 'api/voting_share_tracking.dart';
 import 'api/zsa.dart';
+
 import 'dart:async';
 import 'dart:convert';
+
 import 'frb_generated.dart';
 import 'io.dart';
 import 'lib.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated_web.dart';
+
 import 'pay.dart';
 
 abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
@@ -46,95 +51,117 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     required super.portManager,
   });
 
-  CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_DartVaultPtr =>
-      wire.rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault;
+  CrossPlatformFinalizerArg
+  get rust_arc_decrement_strong_count_DartVaultPtr => wire
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault;
 
-  CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_MempoolPtr => wire
+  CrossPlatformFinalizerArg
+  get rust_arc_decrement_strong_count_MempoolPtr => wire
       .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerMempool;
 
   CrossPlatformFinalizerArg
-      get rust_arc_decrement_strong_count_NoteMigrationPtr => wire
-          .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration;
+  get rust_arc_decrement_strong_count_NoteMigrationPtr => wire
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration;
 
   CrossPlatformFinalizerArg
-      get rust_arc_decrement_strong_count_TransparentScannerPtr => wire
-          .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner;
+  get rust_arc_decrement_strong_count_TransparentScannerPtr => wire
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner;
 
   @protected
   AnyhowException dco_decode_AnyhowException(dynamic raw);
 
   @protected
   DartVault
-      dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault(
-          dynamic raw);
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault(
+    dynamic raw,
+  );
 
   @protected
   Mempool
-      dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerMempool(
-          dynamic raw);
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerMempool(
+    dynamic raw,
+  );
 
   @protected
   NoteMigration
-      dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration(
-          dynamic raw);
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration(
+    dynamic raw,
+  );
 
   @protected
   TransparentScanner
-      dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
-          dynamic raw);
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
+    dynamic raw,
+  );
 
   @protected
   Mempool
-      dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerMempool(
-          dynamic raw);
+  dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerMempool(
+    dynamic raw,
+  );
 
   @protected
   TransparentScanner
-      dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
-          dynamic raw);
+  dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
+    dynamic raw,
+  );
 
   @protected
   DartVault
-      dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault(
-          dynamic raw);
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault(
+    dynamic raw,
+  );
 
   @protected
   NoteMigration
-      dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration(
-          dynamic raw);
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration(
+    dynamic raw,
+  );
 
   @protected
   TransparentScanner
-      dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
-          dynamic raw);
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
+    dynamic raw,
+  );
+
+  @protected
+  FutureOr<Uint8List> Function(Uint8List)
+  dco_decode_DartFn_Inputs_list_prim_u_8_strict_Output_list_prim_u_8_strict_AnyhowException(
+    dynamic raw,
+  );
 
   @protected
   FutureOr<void> Function(Uint8List)
-      dco_decode_DartFn_Inputs_list_prim_u_8_strict_Output_unit_AnyhowException(
-          dynamic raw);
+  dco_decode_DartFn_Inputs_list_prim_u_8_strict_Output_unit_AnyhowException(
+    dynamic raw,
+  );
 
   @protected
   Object dco_decode_DartOpaque(dynamic raw);
 
   @protected
   DartVault
-      dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault(
-          dynamic raw);
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault(
+    dynamic raw,
+  );
 
   @protected
   Mempool
-      dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerMempool(
-          dynamic raw);
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerMempool(
+    dynamic raw,
+  );
 
   @protected
   NoteMigration
-      dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration(
-          dynamic raw);
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration(
+    dynamic raw,
+  );
 
   @protected
   TransparentScanner
-      dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
-          dynamic raw);
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
+    dynamic raw,
+  );
 
   @protected
   RustStreamSink<String> dco_decode_StreamSink_String_Sse(dynamic raw);
@@ -150,19 +177,23 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   RustStreamSink<MigrationStatus> dco_decode_StreamSink_migration_status_Sse(
-      dynamic raw);
+    dynamic raw,
+  );
 
   @protected
   RustStreamSink<SigningEvent> dco_decode_StreamSink_signing_event_Sse(
-      dynamic raw);
+    dynamic raw,
+  );
 
   @protected
   RustStreamSink<SigningStatus> dco_decode_StreamSink_signing_status_Sse(
-      dynamic raw);
+    dynamic raw,
+  );
 
   @protected
   RustStreamSink<SyncProgress> dco_decode_StreamSink_sync_progress_Sse(
-      dynamic raw);
+    dynamic raw,
+  );
 
   @protected
   String dco_decode_String(dynamic raw);
@@ -352,7 +383,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<(String, double, bool)> dco_decode_list_record_string_f_64_bool(
-      dynamic raw);
+    dynamic raw,
+  );
 
   @protected
   List<(int, double)> dco_decode_list_record_u_32_f_64(dynamic raw);
@@ -386,11 +418,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<VotingPendingShareRound> dco_decode_list_voting_pending_share_round(
-      dynamic raw);
+    dynamic raw,
+  );
 
   @protected
   List<VotingProposalListItem> dco_decode_list_voting_proposal_list_item(
-      dynamic raw);
+    dynamic raw,
+  );
 
   @protected
   List<VotingRoundListItem> dco_decode_list_voting_round_list_item(dynamic raw);
@@ -610,103 +644,124 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DartVault
-      sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault(
-          SseDeserializer deserializer);
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault(
+    SseDeserializer deserializer,
+  );
 
   @protected
   Mempool
-      sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerMempool(
-          SseDeserializer deserializer);
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerMempool(
+    SseDeserializer deserializer,
+  );
 
   @protected
   NoteMigration
-      sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration(
-          SseDeserializer deserializer);
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration(
+    SseDeserializer deserializer,
+  );
 
   @protected
   TransparentScanner
-      sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
-          SseDeserializer deserializer);
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
+    SseDeserializer deserializer,
+  );
 
   @protected
   Mempool
-      sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerMempool(
-          SseDeserializer deserializer);
+  sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerMempool(
+    SseDeserializer deserializer,
+  );
 
   @protected
   TransparentScanner
-      sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
-          SseDeserializer deserializer);
+  sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
+    SseDeserializer deserializer,
+  );
 
   @protected
   DartVault
-      sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault(
-          SseDeserializer deserializer);
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault(
+    SseDeserializer deserializer,
+  );
 
   @protected
   NoteMigration
-      sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration(
-          SseDeserializer deserializer);
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration(
+    SseDeserializer deserializer,
+  );
 
   @protected
   TransparentScanner
-      sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
-          SseDeserializer deserializer);
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
+    SseDeserializer deserializer,
+  );
 
   @protected
   Object sse_decode_DartOpaque(SseDeserializer deserializer);
 
   @protected
   DartVault
-      sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault(
-          SseDeserializer deserializer);
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault(
+    SseDeserializer deserializer,
+  );
 
   @protected
   Mempool
-      sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerMempool(
-          SseDeserializer deserializer);
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerMempool(
+    SseDeserializer deserializer,
+  );
 
   @protected
   NoteMigration
-      sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration(
-          SseDeserializer deserializer);
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration(
+    SseDeserializer deserializer,
+  );
 
   @protected
   TransparentScanner
-      sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
-          SseDeserializer deserializer);
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
+    SseDeserializer deserializer,
+  );
 
   @protected
   RustStreamSink<String> sse_decode_StreamSink_String_Sse(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   RustStreamSink<DKGStatus> sse_decode_StreamSink_dkg_status_Sse(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   RustStreamSink<LogMessage> sse_decode_StreamSink_log_message_Sse(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   RustStreamSink<MempoolMsg> sse_decode_StreamSink_mempool_msg_Sse(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   RustStreamSink<MigrationStatus> sse_decode_StreamSink_migration_status_Sse(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   RustStreamSink<SigningEvent> sse_decode_StreamSink_signing_event_Sse(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   RustStreamSink<SigningStatus> sse_decode_StreamSink_signing_status_Sse(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   RustStreamSink<SyncProgress> sse_decode_StreamSink_sync_progress_Sse(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   String sse_decode_String(SseDeserializer deserializer);
@@ -725,7 +780,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   AccountUpdate sse_decode_box_autoadd_account_update(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   bool sse_decode_box_autoadd_bool(SseDeserializer deserializer);
@@ -759,21 +815,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   PaymentOptions sse_decode_box_autoadd_payment_options(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   PcztPackage sse_decode_box_autoadd_pczt_package(SseDeserializer deserializer);
 
   @protected
   RaptorQParams sse_decode_box_autoadd_raptor_q_params(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   Seed sse_decode_box_autoadd_seed(SseDeserializer deserializer);
 
   @protected
   SigningEvent sse_decode_box_autoadd_signing_event(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   int sse_decode_box_autoadd_u_32(SseDeserializer deserializer);
@@ -843,18 +902,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<ContactMatch> sse_decode_list_contact_match(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<DbAccountPreview> sse_decode_list_db_account_preview(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<Folder> sse_decode_list_folder(SseDeserializer deserializer);
 
   @protected
   List<Uint8List> sse_decode_list_list_prim_u_8_strict(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<LWDInfo> sse_decode_list_lwd_info(SseDeserializer deserializer);
@@ -873,7 +935,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<MempoolAmount> sse_decode_list_mempool_amount(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<MempoolNote> sse_decode_list_mempool_note(SseDeserializer deserializer);
@@ -904,19 +967,23 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<(String, double, bool)> sse_decode_list_record_string_f_64_bool(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<(int, double)> sse_decode_list_record_u_32_f_64(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<RestoredAccount> sse_decode_list_restored_account(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<TAddressTxCount> sse_decode_list_t_address_tx_count(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<Tx> sse_decode_list_tx(SseDeserializer deserializer);
@@ -941,19 +1008,23 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<VotingPendingShareRound> sse_decode_list_voting_pending_share_round(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<VotingProposalListItem> sse_decode_list_voting_proposal_list_item(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<VotingRoundListItem> sse_decode_list_voting_round_list_item(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<VotingSelection> sse_decode_list_voting_selection(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<ZsaHolding> sse_decode_list_zsa_holding(SseDeserializer deserializer);
@@ -999,7 +1070,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   OpenAliasResolution sse_decode_open_alias_resolution(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   String? sse_decode_opt_String(SseDeserializer deserializer);
@@ -1012,7 +1084,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   FrostParams? sse_decode_opt_box_autoadd_frost_params(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   int? sse_decode_opt_box_autoadd_i_32(SseDeserializer deserializer);
@@ -1058,7 +1131,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   RawOpenAliasResolution sse_decode_raw_open_alias_resolution(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   Receivers sse_decode_receivers(SseDeserializer deserializer);
@@ -1068,7 +1142,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   (String, double, bool) sse_decode_record_string_f_64_bool(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   (int, double) sse_decode_record_u_32_f_64(SseDeserializer deserializer);
@@ -1078,7 +1153,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SaplingParamsStatus sse_decode_sapling_params_status(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   Seed sse_decode_seed(SseDeserializer deserializer);
@@ -1148,23 +1224,28 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   VotingDriveStatus sse_decode_voting_drive_status(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   VotingEligibilityPreview sse_decode_voting_eligibility_preview(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   VotingPendingShareRound sse_decode_voting_pending_share_round(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   VotingProposalListItem sse_decode_voting_proposal_list_item(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   VotingRoundListItem sse_decode_voting_round_list_item(
-      SseDeserializer deserializer);
+    SseDeserializer deserializer,
+  );
 
   @protected
   VotingSelection sse_decode_voting_selection(SseDeserializer deserializer);
@@ -1174,112 +1255,165 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_AnyhowException(
-      AnyhowException self, SseSerializer serializer);
+    AnyhowException self,
+    SseSerializer serializer,
+  );
 
   @protected
   void
-      sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault(
-          DartVault self, SseSerializer serializer);
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault(
+    DartVault self,
+    SseSerializer serializer,
+  );
 
   @protected
   void
-      sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerMempool(
-          Mempool self, SseSerializer serializer);
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerMempool(
+    Mempool self,
+    SseSerializer serializer,
+  );
 
   @protected
   void
-      sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration(
-          NoteMigration self, SseSerializer serializer);
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration(
+    NoteMigration self,
+    SseSerializer serializer,
+  );
 
   @protected
   void
-      sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
-          TransparentScanner self, SseSerializer serializer);
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
+    TransparentScanner self,
+    SseSerializer serializer,
+  );
 
   @protected
   void
-      sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerMempool(
-          Mempool self, SseSerializer serializer);
+  sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerMempool(
+    Mempool self,
+    SseSerializer serializer,
+  );
 
   @protected
   void
-      sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
-          TransparentScanner self, SseSerializer serializer);
+  sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
+    TransparentScanner self,
+    SseSerializer serializer,
+  );
 
   @protected
   void
-      sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault(
-          DartVault self, SseSerializer serializer);
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault(
+    DartVault self,
+    SseSerializer serializer,
+  );
 
   @protected
   void
-      sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration(
-          NoteMigration self, SseSerializer serializer);
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration(
+    NoteMigration self,
+    SseSerializer serializer,
+  );
 
   @protected
   void
-      sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
-          TransparentScanner self, SseSerializer serializer);
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
+    TransparentScanner self,
+    SseSerializer serializer,
+  );
 
   @protected
   void
-      sse_encode_DartFn_Inputs_list_prim_u_8_strict_Output_unit_AnyhowException(
-          FutureOr<void> Function(Uint8List) self, SseSerializer serializer);
+  sse_encode_DartFn_Inputs_list_prim_u_8_strict_Output_list_prim_u_8_strict_AnyhowException(
+    FutureOr<Uint8List> Function(Uint8List) self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_DartFn_Inputs_list_prim_u_8_strict_Output_unit_AnyhowException(
+    FutureOr<void> Function(Uint8List) self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_DartOpaque(Object self, SseSerializer serializer);
 
   @protected
   void
-      sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault(
-          DartVault self, SseSerializer serializer);
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault(
+    DartVault self,
+    SseSerializer serializer,
+  );
 
   @protected
   void
-      sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerMempool(
-          Mempool self, SseSerializer serializer);
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerMempool(
+    Mempool self,
+    SseSerializer serializer,
+  );
 
   @protected
   void
-      sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration(
-          NoteMigration self, SseSerializer serializer);
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration(
+    NoteMigration self,
+    SseSerializer serializer,
+  );
 
   @protected
   void
-      sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
-          TransparentScanner self, SseSerializer serializer);
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
+    TransparentScanner self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_StreamSink_String_Sse(
-      RustStreamSink<String> self, SseSerializer serializer);
+    RustStreamSink<String> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_StreamSink_dkg_status_Sse(
-      RustStreamSink<DKGStatus> self, SseSerializer serializer);
+    RustStreamSink<DKGStatus> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_StreamSink_log_message_Sse(
-      RustStreamSink<LogMessage> self, SseSerializer serializer);
+    RustStreamSink<LogMessage> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_StreamSink_mempool_msg_Sse(
-      RustStreamSink<MempoolMsg> self, SseSerializer serializer);
+    RustStreamSink<MempoolMsg> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_StreamSink_migration_status_Sse(
-      RustStreamSink<MigrationStatus> self, SseSerializer serializer);
+    RustStreamSink<MigrationStatus> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_StreamSink_signing_event_Sse(
-      RustStreamSink<SigningEvent> self, SseSerializer serializer);
+    RustStreamSink<SigningEvent> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_StreamSink_signing_status_Sse(
-      RustStreamSink<SigningStatus> self, SseSerializer serializer);
+    RustStreamSink<SigningStatus> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_StreamSink_sync_progress_Sse(
-      RustStreamSink<SyncProgress> self, SseSerializer serializer);
+    RustStreamSink<SyncProgress> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_String(String self, SseSerializer serializer);
@@ -1298,7 +1432,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_box_autoadd_account_update(
-      AccountUpdate self, SseSerializer serializer);
+    AccountUpdate self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_box_autoadd_bool(bool self, SseSerializer serializer);
@@ -1317,41 +1453,57 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_box_autoadd_frost_params(
-      FrostParams self, SseSerializer serializer);
+    FrostParams self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_box_autoadd_i_32(int self, SseSerializer serializer);
 
   @protected
   void sse_encode_box_autoadd_i_64(
-      PlatformInt64 self, SseSerializer serializer);
+    PlatformInt64 self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_box_autoadd_mempool_tx(
-      MempoolTx self, SseSerializer serializer);
+    MempoolTx self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_box_autoadd_new_account(
-      NewAccount self, SseSerializer serializer);
+    NewAccount self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_box_autoadd_payment_options(
-      PaymentOptions self, SseSerializer serializer);
+    PaymentOptions self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_box_autoadd_pczt_package(
-      PcztPackage self, SseSerializer serializer);
+    PcztPackage self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_box_autoadd_raptor_q_params(
-      RaptorQParams self, SseSerializer serializer);
+    RaptorQParams self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_box_autoadd_seed(Seed self, SseSerializer serializer);
 
   @protected
   void sse_encode_box_autoadd_signing_event(
-      SigningEvent self, SseSerializer serializer);
+    SigningEvent self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_box_autoadd_u_32(int self, SseSerializer serializer);
@@ -1376,7 +1528,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_db_account_preview(
-      DbAccountPreview self, SseSerializer serializer);
+    DbAccountPreview self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_decision(Decision self, SseSerializer serializer);
@@ -1398,7 +1552,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_frost_sign_params(
-      FrostSignParams self, SseSerializer serializer);
+    FrostSignParams self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_i_32(int self, SseSerializer serializer);
@@ -1423,18 +1579,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_list_contact_match(
-      List<ContactMatch> self, SseSerializer serializer);
+    List<ContactMatch> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_db_account_preview(
-      List<DbAccountPreview> self, SseSerializer serializer);
+    List<DbAccountPreview> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_folder(List<Folder> self, SseSerializer serializer);
 
   @protected
   void sse_encode_list_list_prim_u_8_strict(
-      List<Uint8List> self, SseSerializer serializer);
+    List<Uint8List> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_lwd_info(List<LWDInfo> self, SseSerializer serializer);
@@ -1450,62 +1612,90 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_list_memo_section(
-      List<MemoSection> self, SseSerializer serializer);
+    List<MemoSection> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_mempool_amount(
-      List<MempoolAmount> self, SseSerializer serializer);
+    List<MempoolAmount> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_mempool_note(
-      List<MempoolNote> self, SseSerializer serializer);
+    List<MempoolNote> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_plugin_info(
-      List<PluginInfo> self, SseSerializer serializer);
+    List<PluginInfo> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_prim_u_32_loose(
-      List<int> self, SseSerializer serializer);
+    List<int> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_prim_u_32_strict(
-      Uint32List self, SseSerializer serializer);
+    Uint32List self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_prim_u_64_strict(
-      Uint64List self, SseSerializer serializer);
+    Uint64List self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_prim_u_8_loose(List<int> self, SseSerializer serializer);
 
   @protected
   void sse_encode_list_prim_u_8_strict(
-      Uint8List self, SseSerializer serializer);
+    Uint8List self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_prim_usize_strict(
-      Uint64List self, SseSerializer serializer);
+    Uint64List self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_recipient(
-      List<Recipient> self, SseSerializer serializer);
+    List<Recipient> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_record_string_f_64_bool(
-      List<(String, double, bool)> self, SseSerializer serializer);
+    List<(String, double, bool)> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_record_u_32_f_64(
-      List<(int, double)> self, SseSerializer serializer);
+    List<(int, double)> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_restored_account(
-      List<RestoredAccount> self, SseSerializer serializer);
+    List<RestoredAccount> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_t_address_tx_count(
-      List<TAddressTxCount> self, SseSerializer serializer);
+    List<TAddressTxCount> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_tx(List<Tx> self, SseSerializer serializer);
@@ -1521,34 +1711,48 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_list_tx_plan_in(
-      List<TxPlanIn> self, SseSerializer serializer);
+    List<TxPlanIn> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_tx_plan_out(
-      List<TxPlanOut> self, SseSerializer serializer);
+    List<TxPlanOut> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_tx_spend(List<TxSpend> self, SseSerializer serializer);
 
   @protected
   void sse_encode_list_voting_pending_share_round(
-      List<VotingPendingShareRound> self, SseSerializer serializer);
+    List<VotingPendingShareRound> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_voting_proposal_list_item(
-      List<VotingProposalListItem> self, SseSerializer serializer);
+    List<VotingProposalListItem> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_voting_round_list_item(
-      List<VotingRoundListItem> self, SseSerializer serializer);
+    List<VotingRoundListItem> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_voting_selection(
-      List<VotingSelection> self, SseSerializer serializer);
+    List<VotingSelection> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_zsa_holding(
-      List<ZsaHolding> self, SseSerializer serializer);
+    List<ZsaHolding> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_log_message(LogMessage self, SseSerializer serializer);
@@ -1582,18 +1786,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_migration_event(
-      MigrationEvent self, SseSerializer serializer);
+    MigrationEvent self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_migration_status(
-      MigrationStatus self, SseSerializer serializer);
+    MigrationStatus self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_new_account(NewAccount self, SseSerializer serializer);
 
   @protected
   void sse_encode_open_alias_resolution(
-      OpenAliasResolution self, SseSerializer serializer);
+    OpenAliasResolution self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_opt_String(String? self, SseSerializer serializer);
@@ -1606,14 +1816,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_opt_box_autoadd_frost_params(
-      FrostParams? self, SseSerializer serializer);
+    FrostParams? self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_opt_box_autoadd_i_32(int? self, SseSerializer serializer);
 
   @protected
   void sse_encode_opt_box_autoadd_i_64(
-      PlatformInt64? self, SseSerializer serializer);
+    PlatformInt64? self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_opt_box_autoadd_seed(Seed? self, SseSerializer serializer);
@@ -1632,15 +1846,21 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_opt_list_prim_u_8_strict(
-      Uint8List? self, SseSerializer serializer);
+    Uint8List? self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_opt_list_recipient(
-      List<Recipient>? self, SseSerializer serializer);
+    List<Recipient>? self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_payment_options(
-      PaymentOptions self, SseSerializer serializer);
+    PaymentOptions self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_pczt_package(PcztPackage self, SseSerializer serializer);
@@ -1656,7 +1876,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_raw_open_alias_resolution(
-      RawOpenAliasResolution self, SseSerializer serializer);
+    RawOpenAliasResolution self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_receivers(Receivers self, SseSerializer serializer);
@@ -1666,19 +1888,27 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_record_string_f_64_bool(
-      (String, double, bool) self, SseSerializer serializer);
+    (String, double, bool) self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_record_u_32_f_64(
-      (int, double) self, SseSerializer serializer);
+    (int, double) self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_restored_account(
-      RestoredAccount self, SseSerializer serializer);
+    RestoredAccount self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_sapling_params_status(
-      SaplingParamsStatus self, SseSerializer serializer);
+    SaplingParamsStatus self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_seed(Seed self, SseSerializer serializer);
@@ -1697,7 +1927,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_t_address_tx_count(
-      TAddressTxCount self, SseSerializer serializer);
+    TAddressTxCount self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_tx(Tx self, SseSerializer serializer);
@@ -1749,27 +1981,39 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_voting_drive_status(
-      VotingDriveStatus self, SseSerializer serializer);
+    VotingDriveStatus self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_voting_eligibility_preview(
-      VotingEligibilityPreview self, SseSerializer serializer);
+    VotingEligibilityPreview self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_voting_pending_share_round(
-      VotingPendingShareRound self, SseSerializer serializer);
+    VotingPendingShareRound self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_voting_proposal_list_item(
-      VotingProposalListItem self, SseSerializer serializer);
+    VotingProposalListItem self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_voting_round_list_item(
-      VotingRoundListItem self, SseSerializer serializer);
+    VotingRoundListItem self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_voting_selection(
-      VotingSelection self, SseSerializer serializer);
+    VotingSelection self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_zsa_holding(ZsaHolding self, SseSerializer serializer);
@@ -1780,53 +2024,69 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 class RustLibWire implements BaseWire {
   RustLibWire.fromExternalLibrary(ExternalLibrary lib);
 
-  void rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault(
-          int ptr) =>
-      wasmModule
-          .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault(
-              ptr);
+  void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault(
+        ptr,
+      );
 
-  void rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault(
-          int ptr) =>
-      wasmModule
-          .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault(
-              ptr);
+  void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault(
+        ptr,
+      );
 
-  void rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerMempool(
-          int ptr) =>
-      wasmModule
-          .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerMempool(
-              ptr);
+  void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerMempool(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerMempool(
+        ptr,
+      );
 
-  void rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerMempool(
-          int ptr) =>
-      wasmModule
-          .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerMempool(
-              ptr);
+  void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerMempool(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerMempool(
+        ptr,
+      );
 
-  void rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration(
-          int ptr) =>
-      wasmModule
-          .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration(
-              ptr);
+  void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration(
+        ptr,
+      );
 
-  void rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration(
-          int ptr) =>
-      wasmModule
-          .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration(
-              ptr);
+  void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration(
+        ptr,
+      );
 
-  void rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
-          int ptr) =>
-      wasmModule
-          .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
-              ptr);
+  void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
+        ptr,
+      );
 
-  void rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
-          int ptr) =>
-      wasmModule
-          .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
-              ptr);
+  void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
+        ptr,
+      );
 }
 
 @JS('wasm_bindgen')
@@ -1836,34 +2096,42 @@ external RustLibWasmModule get wasmModule;
 @anonymous
 extension type RustLibWasmModule._(JSObject _) implements JSObject {
   external void
-      rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault(
-          int ptr);
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault(
+    int ptr,
+  );
 
   external void
-      rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault(
-          int ptr);
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerDartVault(
+    int ptr,
+  );
 
   external void
-      rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerMempool(
-          int ptr);
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerMempool(
+    int ptr,
+  );
 
   external void
-      rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerMempool(
-          int ptr);
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerMempool(
+    int ptr,
+  );
 
   external void
-      rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration(
-          int ptr);
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration(
+    int ptr,
+  );
 
   external void
-      rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration(
-          int ptr);
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerNoteMigration(
+    int ptr,
+  );
 
   external void
-      rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
-          int ptr);
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
+    int ptr,
+  );
 
   external void
-      rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
-          int ptr);
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerTransparentScanner(
+    int ptr,
+  );
 }

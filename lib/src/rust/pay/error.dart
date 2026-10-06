@@ -4,6 +4,7 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../frb_generated.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'error.freezed.dart';
@@ -13,14 +14,8 @@ sealed class Error with _$Error {
   const Error._();
 
   const factory Error.invalidPoolMask() = Error_InvalidPoolMask;
-  const factory Error.notEnoughFunds(
-    String field0,
-  ) = Error_NotEnoughFunds;
+  const factory Error.notEnoughFunds(String field0) = Error_NotEnoughFunds;
   const factory Error.noSigningKey() = Error_NoSigningKey;
-  const factory Error.sqlx(
-    Error field0,
-  ) = Error_Sqlx;
-  const factory Error.other(
-    Error field0,
-  ) = Error_Other;
+  const factory Error.sqlx(Error field0) = Error_Sqlx;
+  const factory Error.other(Error field0) = Error_Other;
 }

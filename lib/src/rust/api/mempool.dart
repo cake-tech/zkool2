@@ -5,6 +5,7 @@
 
 import '../frb_generated.dart';
 import 'coin.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'mempool.freezed.dart';
@@ -52,12 +53,8 @@ class MempoolAmount {
 sealed class MempoolMsg with _$MempoolMsg {
   const MempoolMsg._();
 
-  const factory MempoolMsg.blockHeight(
-    int field0,
-  ) = MempoolMsg_BlockHeight;
-  const factory MempoolMsg.txId(
-    MempoolTx field0,
-  ) = MempoolMsg_TxId;
+  const factory MempoolMsg.blockHeight(int field0) = MempoolMsg_BlockHeight;
+  const factory MempoolMsg.txId(MempoolTx field0) = MempoolMsg_TxId;
 }
 
 class MempoolNote {

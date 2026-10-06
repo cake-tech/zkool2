@@ -5,28 +5,32 @@
 
 import '../frb_generated.dart';
 import 'coin.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 Future<List<DbAccountPreview>> listDbAccounts({required String dbFilepath}) =>
     RustLib.instance.api.crateApiDbListDbAccounts(dbFilepath: dbFilepath);
 
-Future<void> changeDbPassword(
-        {required String dbFilepath,
-        required String tmpDir,
-        required String oldPassword,
-        required String newPassword}) =>
-    RustLib.instance.api.crateApiDbChangeDbPassword(
-        dbFilepath: dbFilepath,
-        tmpDir: tmpDir,
-        oldPassword: oldPassword,
-        newPassword: newPassword);
+Future<void> changeDbPassword({
+  required String dbFilepath,
+  required String tmpDir,
+  required String oldPassword,
+  required String newPassword,
+}) => RustLib.instance.api.crateApiDbChangeDbPassword(
+  dbFilepath: dbFilepath,
+  tmpDir: tmpDir,
+  oldPassword: oldPassword,
+  newPassword: newPassword,
+);
 
 Future<String?> getProp({required String key, required Coin c}) =>
     RustLib.instance.api.crateApiDbGetProp(key: key, c: c);
 
-Future<void> putProp(
-        {required String key, required String value, required Coin c}) =>
-    RustLib.instance.api.crateApiDbPutProp(key: key, value: value, c: c);
+Future<void> putProp({
+  required String key,
+  required String value,
+  required Coin c,
+}) => RustLib.instance.api.crateApiDbPutProp(key: key, value: value, c: c);
 
 /// Deletes a wallet database and every file that belongs to it.
 ///
@@ -44,10 +48,13 @@ Future<void> deleteDb({required String dbFilepath}) =>
 /// wallet so its state stays attached to the wallet it describes, and the WAL
 /// companions move too -- one left behind holds commits the renamed database
 /// would no longer see.
-Future<void> renameDb(
-        {required String dbFilepath, required String newDbFilepath}) =>
-    RustLib.instance.api.crateApiDbRenameDb(
-        dbFilepath: dbFilepath, newDbFilepath: newDbFilepath);
+Future<void> renameDb({
+  required String dbFilepath,
+  required String newDbFilepath,
+}) => RustLib.instance.api.crateApiDbRenameDb(
+  dbFilepath: dbFilepath,
+  newDbFilepath: newDbFilepath,
+);
 
 Future<List<String>> listDbNames({required String dir}) =>
     RustLib.instance.api.crateApiDbListDbNames(dir: dir);
@@ -56,10 +63,7 @@ class DbAccountPreview {
   final int id;
   final String name;
 
-  const DbAccountPreview({
-    required this.id,
-    required this.name,
-  });
+  const DbAccountPreview({required this.id, required this.name});
 
   @override
   int get hashCode => id.hashCode ^ name.hashCode;

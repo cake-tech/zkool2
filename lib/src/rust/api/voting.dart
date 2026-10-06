@@ -5,6 +5,7 @@
 
 import '../frb_generated.dart';
 import 'coin.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'voting.freezed.dart';
@@ -19,38 +20,45 @@ Future<List<VotingRoundListItem>> votingRoundList({required Coin c}) =>
     RustLib.instance.api.crateApiVotingVotingRoundList(c: c);
 
 /// Loads selections from the wallet's voting sidecar before submission.
-Future<List<VotingSelection>> votingLoadSelections(
-        {required String roundId, required Coin c}) =>
-    RustLib.instance.api
-        .crateApiVotingVotingLoadSelections(roundId: roundId, c: c);
+Future<List<VotingSelection>> votingLoadSelections({
+  required String roundId,
+  required Coin c,
+}) => RustLib.instance.api.crateApiVotingVotingLoadSelections(
+  roundId: roundId,
+  c: c,
+);
 
 /// Saves a selection or skip without submitting a vote.
-Future<void> votingSaveSelection(
-        {required String roundId,
-        required int proposalId,
-        required Decision decision,
-        required int numOptions,
-        required Coin c}) =>
-    RustLib.instance.api.crateApiVotingVotingSaveSelection(
-        roundId: roundId,
-        proposalId: proposalId,
-        decision: decision,
-        numOptions: numOptions,
-        c: c);
+Future<void> votingSaveSelection({
+  required String roundId,
+  required int proposalId,
+  required Decision decision,
+  required int numOptions,
+  required Coin c,
+}) => RustLib.instance.api.crateApiVotingVotingSaveSelection(
+  roundId: roundId,
+  proposalId: proposalId,
+  decision: decision,
+  numOptions: numOptions,
+  c: c,
+);
 
 /// Returns a proposal to unanswered, subject to the voting lifecycle guards.
-Future<void> votingClearSelection(
-        {required String roundId, required int proposalId, required Coin c}) =>
-    RustLib.instance.api.crateApiVotingVotingClearSelection(
-        roundId: roundId, proposalId: proposalId, c: c);
+Future<void> votingClearSelection({
+  required String roundId,
+  required int proposalId,
+  required Coin c,
+}) => RustLib.instance.api.crateApiVotingVotingClearSelection(
+  roundId: roundId,
+  proposalId: proposalId,
+  c: c,
+);
 
 @freezed
 sealed class Decision with _$Decision {
   const Decision._();
 
-  const factory Decision.choice({
-    required int choice,
-  }) = Decision_Choice;
+  const factory Decision.choice({required int choice}) = Decision_Choice;
   const factory Decision.skipped() = Decision_Skipped;
 }
 

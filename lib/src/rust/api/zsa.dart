@@ -5,6 +5,7 @@
 
 import '../frb_generated.dart';
 import 'coin.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'zsa.freezed.dart';
@@ -16,12 +17,15 @@ Future<List<ZsaHolding>> listZsaHoldings({required Coin c}) =>
 
 /// Set or update the human-readable name for a ZSA asset.
 /// Pass an empty string to clear the name (reverting to the hex fallback display).
-Future<void> setAssetName(
-        {required PlatformInt64 idAsset,
-        required String name,
-        required Coin c}) =>
-    RustLib.instance.api
-        .crateApiZsaSetAssetName(idAsset: idAsset, name: name, c: c);
+Future<void> setAssetName({
+  required PlatformInt64 idAsset,
+  required String name,
+  required Coin c,
+}) => RustLib.instance.api.crateApiZsaSetAssetName(
+  idAsset: idAsset,
+  name: name,
+  c: c,
+);
 
 /// Check whether ZSA (Zcash Shielded Assets) is available on the current network.
 ///

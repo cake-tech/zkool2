@@ -4,13 +4,15 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import '../frb_generated.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `ec_level_of`
 
-Future<List<Uint8List>> encode(
-        {required String path, required RaptorQParams params}) =>
-    RustLib.instance.api.crateApiRaptorEncode(path: path, params: params);
+Future<List<Uint8List>> encode({
+  required String path,
+  required RaptorQParams params,
+}) => RustLib.instance.api.crateApiRaptorEncode(path: path, params: params);
 
 Uint8List getQrBytes({required List<int> data}) =>
     RustLib.instance.api.crateApiRaptorGetQrBytes(data: data);

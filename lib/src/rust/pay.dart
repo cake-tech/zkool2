@@ -4,6 +4,7 @@
 // ignore_for_file: invalid_use_of_internal_member, unused_import, unnecessary_import
 
 import 'frb_generated.dart';
+
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 class Recipient {
@@ -97,11 +98,7 @@ class TxPlanIn {
   final BigInt? amount;
   final String assetName;
 
-  const TxPlanIn({
-    required this.pool,
-    this.amount,
-    required this.assetName,
-  });
+  const TxPlanIn({required this.pool, this.amount, required this.assetName});
 
   @override
   int get hashCode => pool.hashCode ^ amount.hashCode ^ assetName.hashCode;
