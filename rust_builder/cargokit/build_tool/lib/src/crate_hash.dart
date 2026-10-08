@@ -116,6 +116,18 @@ class CrateHash {
     addFile('Cargo.lock');
     addFile('build.rs');
     addFile('cargokit.yaml');
+    final root = Platform.environment['CARGOKIT_ROOT_PROJECT_DIR'];
+    if (root != null && root.isNotEmpty) {
+      var dir = Directory(root);
+      while (dir.parent.path != dir.path) {
+        final config = File(path.join(dir.path, 'cargokit.yaml'));
+        if (config.existsSync()) {
+          files.add(config);
+          break;
+        }
+        dir = dir.parent;
+      }
+    }
     return files;
   }
 

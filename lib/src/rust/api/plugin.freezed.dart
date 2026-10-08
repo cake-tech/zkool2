@@ -523,7 +523,7 @@ extension MemoRowPatterns on MemoRow {
 /// @nodoc
 
 class _MemoRow implements MemoRow {
-  const _MemoRow({required final List<MemoCell> cells}) : _cells = cells;
+  const _MemoRow({required List<MemoCell> cells}) : _cells = cells;
 
   final List<MemoCell> _cells;
   @override
@@ -830,8 +830,8 @@ extension MemoSectionPatterns on MemoSection {
 class _MemoSection implements MemoSection {
   const _MemoSection(
       {required this.title,
-      required final List<String> headers,
-      required final List<MemoRow> rows})
+      required List<String> headers,
+      required List<MemoRow> rows})
       : _headers = headers,
         _rows = rows;
 
@@ -1249,8 +1249,8 @@ class _PluginInfo implements PluginInfo {
       this.author,
       this.description,
       required this.enabled,
-      required final List<String> types,
-      required final List<String> memoPrefixes})
+      required List<String> types,
+      required List<String> memoPrefixes})
       : _types = types,
         _memoPrefixes = memoPrefixes;
 

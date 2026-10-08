@@ -64,6 +64,9 @@ Future<int> generateNextDindex({required Coin c}) =>
 Future<String?> generateNextChangeAddress({required Coin c}) =>
     RustLib.instance.api.crateApiAccountGenerateNextChangeAddress(c: c);
 
+Future<List<String>> internalChangeAddresses({required Coin c}) =>
+    RustLib.instance.api.crateApiAccountInternalChangeAddresses(c: c);
+
 Future<void> resetSync({required int id, required Coin c}) =>
     RustLib.instance.api.crateApiAccountResetSync(id: id, c: c);
 

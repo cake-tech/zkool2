@@ -258,6 +258,12 @@ pub async fn generate_next_change_address(c: &Coin) -> Result<Option<String>> {
 }
 
 #[cfg_attr(feature = "flutter", frb)]
+pub async fn internal_change_addresses(c: &Coin) -> Result<Vec<String>> {
+    let mut connection = c.get_connection().await?;
+    crate::account::internal_change_addresses(&c.network(), &mut connection, c.account).await
+}
+
+#[cfg_attr(feature = "flutter", frb)]
 pub async fn reset_sync(id: u32, c: &Coin) -> Result<()> {
     let mut connection = c.get_connection().await?;
 

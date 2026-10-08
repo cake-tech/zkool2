@@ -104,7 +104,13 @@ pub async fn new_account(
         key = generate_seed()?;
     }
 
-    let pools = na.pools.unwrap_or(ALL_POOLS);
+    // The Official Ledger app only ever signs transparent and ironwood
+    // spends, so that is what an account for it tracks unless told otherwise.
+    let pools = na.pools.unwrap_or(if ledger_kind == HwKind::Official {
+        POOL_TRANSPARENT | POOL_IRONWOOD
+    } else {
+        ALL_POOLS
+    });
     if pools == 0 {
         anyhow::bail!("an account must support at least one pool");
     }
@@ -117,9 +123,9 @@ pub async fn new_account(
                         "Official Ledger accounts support transparent and ironwood pools only"
                     );
                 }
-                if !key.is_empty() && !is_valid_phrase(&key) {
+                if !key.is_empty() && !is_valid_phrase(&key) && !is_valid_ufvk(network, &key) {
                     anyhow::bail!(
-                        "Official Ledger accounts accept a seed phrase or no key to import the viewing key from the device"
+                        "Official Ledger accounts accept a seed phrase, a unified viewing key exported by the device, or no key to import the viewing key from the device"
                     );
                 }
             }
@@ -188,11 +194,18 @@ pub async fn new_account(
             .await?;
         }
         update_dindex(&mut db_tx, account, dindex, true).await?;
-    } else if ledger_kind == Some(HwKind::Official) && key.is_empty() {
-        // import the viewing key from the Official Ledger device
+    } else if ledger_kind == Some(HwKind::Official) && !is_valid_phrase(&key) {
+        // A watch-only account for the Official Ledger app. The viewing key
+        // either comes straight from the device here, or was exported earlier
+        // by a host that owns the device connection (the mobile wallet, where
+        // the transport is not available from Rust) and is passed as the key.
         store_account_hw(&mut db_tx, account, HwKind::Official as u8, na.aindex).await?;
-        let ledger = get_ledger(&mut db_tx, account).await?;
-        let ufvk = ledger.get_ufvk(network, na.aindex).await?;
+        let ufvk = if key.is_empty() {
+            let ledger = get_ledger(&mut db_tx, account).await?;
+            ledger.get_ufvk(network, na.aindex).await?
+        } else {
+            key.clone()
+        };
         let uvk = UnifiedFullViewingKey::decode(network, &ufvk)
             .map_err(|_| anyhow!("Invalid viewing key from the device"))?;
 
@@ -1237,6 +1250,43 @@ pub async fn get_addresses(
         ua: ua.map(|x| x.encode(&network)),
         diversifier_index,
     };
+
+    Ok(addresses)
+}
+
+/// Change receivers for this account, encoded the same way a PCZT plan shows an
+/// output that has no user-facing address. Orchard and Ironwood change is the
+/// internal-scope receiver at diversifier 0. Sapling change is the protocol
+/// change address. Transparent entries are the stored internal-scope addresses.
+pub async fn internal_change_addresses(
+    network: &Network,
+    connection: &mut SqliteConnection,
+    account: u32,
+) -> Result<Vec<String>> {
+    let mut addresses = Vec::new();
+
+    let orchard_keys = crate::db::select_account_orchard(connection, account).await?;
+    if let Some(fvk) = orchard_keys.xvk.as_ref() {
+        let change = fvk.address_at(0u32, orchard::keys::Scope::Internal);
+        if let Some(address) = UnifiedAddress::from_receivers(Some(change), None, None) {
+            addresses.push(address.encode(network));
+        }
+    }
+
+    let sapling_keys = crate::db::select_account_sapling(network, connection, account).await?;
+    if let Some(fvk) = sapling_keys.xvk.as_ref() {
+        let (_, change) = fvk.change_address();
+        addresses.push(change.encode(network));
+    }
+
+    let transparent = sqlx::query(
+        "SELECT address FROM transparent_address_accounts WHERE account = ? AND scope = 1",
+    )
+    .bind(account)
+    .map(|row: SqliteRow| row.get(0))
+    .fetch_all(&mut *connection)
+    .await?;
+    addresses.extend(transparent);
 
     Ok(addresses)
 }
