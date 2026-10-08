@@ -216,17 +216,62 @@ class CargokitCrateOptions {
     );
   }
 
+  CargokitCrateOptions mergeFlags(CargokitCrateOptions other) {
+    final configurations = {...cargo.keys, ...other.cargo.keys};
+    final merged = <BuildConfiguration, CargoBuildOptions>{};
+    for (final configuration in configurations) {
+      final ours = cargo[configuration];
+      final extra = other.cargo[configuration];
+      if (ours == null) {
+        merged[configuration] = extra!;
+      } else if (extra == null) {
+        merged[configuration] = ours;
+      } else {
+        merged[configuration] = CargoBuildOptions(
+          toolchain: ours.toolchain,
+          flags: [...ours.flags, ...extra.flags],
+        );
+      }
+    }
+    return CargokitCrateOptions(
+      cargo: merged,
+      precompiledBinaries: precompiledBinaries,
+    );
+  }
+
   static CargokitCrateOptions load({
     required String manifestDir,
   }) {
-    final uri = Uri.file(path.join(manifestDir, "cargokit.yaml"));
-    final file = File.fromUri(uri);
-    if (file.existsSync()) {
-      final contents = loadYamlNode(file.readAsStringSync(), sourceUrl: uri);
-      return parse(contents);
-    } else {
-      return CargokitCrateOptions();
+    final crate = _loadFile(path.join(manifestDir, "cargokit.yaml"));
+    final appFile = findAppConfig();
+    if (appFile == null) return crate;
+    final crateFile = File(path.join(manifestDir, "cargokit.yaml"));
+    if (path.equals(path.normalize(appFile.path), path.normalize(crateFile.path))) {
+      return crate;
     }
+    return crate.mergeFlags(_loadFile(appFile.path));
+  }
+
+  /// The nearest `cargokit.yaml` above the app project. Cupcake uses this to
+  /// pass `--features bundled-sapling-params` without changing Cake's build.
+  static File? findAppConfig() {
+    final root = Platform.environment['CARGOKIT_ROOT_PROJECT_DIR'];
+    if (root == null || root.isEmpty) return null;
+    var dir = Directory(root);
+    while (dir.parent.path != dir.path) {
+      final config = File(path.join(dir.path, 'cargokit.yaml'));
+      if (config.existsSync()) return config;
+      dir = dir.parent;
+    }
+    return null;
+  }
+
+  static CargokitCrateOptions _loadFile(String filePath) {
+    final uri = Uri.file(filePath);
+    final file = File.fromUri(uri);
+    if (!file.existsSync()) return CargokitCrateOptions();
+    final contents = loadYamlNode(file.readAsStringSync(), sourceUrl: uri);
+    return parse(contents);
   }
 }
 

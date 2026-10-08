@@ -75,6 +75,11 @@ Future<String?> generateNextChangeAddress(
     RustLib.instance.api
         .crateApiAccountGenerateNextChangeAddress(account: account, c: c);
 
+Future<List<String>> internalChangeAddresses(
+        {required int account, required Coin c}) =>
+    RustLib.instance.api
+        .crateApiAccountInternalChangeAddresses(account: account, c: c);
+
 Future<void> resetSync({required int id, required Coin c}) =>
     RustLib.instance.api.crateApiAccountResetSync(id: id, c: c);
 
@@ -98,8 +103,10 @@ Future<Addresses> getAccountAddresses(
     RustLib.instance.api.crateApiAccountGetAccountAddresses(
         account: account, uaPools: uaPools, c: c);
 
-Future<List<String>> listOwnedAddresses({required Coin c}) =>
-    RustLib.instance.api.crateApiAccountListOwnedAddresses(c: c);
+Future<List<String>> listOwnedAddresses(
+        {required int account, required Coin c}) =>
+    RustLib.instance.api
+        .crateApiAccountListOwnedAddresses(account: account, c: c);
 
 Future<TxAccount> getTxDetails(
         {required int idTx, required int account, required Coin c}) =>

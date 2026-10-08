@@ -12,8 +12,8 @@ use orchard::{
 };
 use pczt::{
     roles::{
-        creator::Creator, io_finalizer::IoFinalizer, issuer::Issuer,
-        tx_extractor::TransactionExtractor, updater::Updater,
+        creator::Creator, io_finalizer::IoFinalizer, issuer::Issuer, prover::Prover,
+        spend_finalizer::SpendFinalizer, tx_extractor::TransactionExtractor, updater::Updater,
     },
     Pczt,
 };
@@ -1234,6 +1234,84 @@ fn encode_memo(recipient: &Recipient) -> Result<Option<MemoBytes>> {
         .transpose()?;
     let memo = text_memo.or(byte_memo);
     Ok(memo)
+}
+
+/// Prove and spend-finalize a PCZT whose signatures are already present.
+///
+/// Software signing and a Keystone QR both end here. The caller does not need
+/// a spend key; proof generation uses the public proving parameters.
+pub async fn prove_and_finalize(pczt: Pczt) -> Result<Pczt> {
+    let orchard_pk = get_orchard_pk(*pczt.global().consensus_branch_id())?;
+    info!("Adding Proofs to PCZT");
+    let sapling_prover = get_sapling_prover().await?;
+    let pczt = Prover::new(pczt)
+        .create_sapling_proofs(UnwrapErr(SysRng), sapling_prover, sapling_prover)
+        .map_err(|error| anyhow!("failed to create Sapling proofs: {error:?}"))?
+        .create_orchard_proof(UnwrapErr(SysRng), orchard_pk)
+        .map_err(|error| anyhow!("failed to create Orchard proof: {error:?}"))?
+        .create_ironwood_proof(UnwrapErr(SysRng), &IRONWOOD_PK)
+        .map_err(|error| anyhow!("failed to create Ironwood proof: {error:?}"))?
+        .finish();
+    info!("Proved");
+    let pczt = SpendFinalizer::new(pczt)
+        .finalize_spends()
+        .map_err(|error| anyhow!("failed to finalize PCZT spends: {error:?}"))?;
+    info!("Spend Finalized");
+    Ok(pczt)
+}
+
+/// Rebuild the signer index lists from a raw unsigned PCZT.
+///
+/// Keystone's `zcash-pczt` QR carries only the PCZT bytes. Spends that still
+/// need this wallet's signature are the ones `prepare` marked with a scope,
+/// plus Orchard and Ironwood actions that do not yet have a spend authorization.
+pub fn unsigned_pczt_package(bytes: &[u8]) -> Result<PcztPackage> {
+    let pczt = Pczt::parse(bytes)
+        .map_err(|error| anyhow!("failed to parse unsigned PCZT: {error:?}"))?;
+    let n_transparent = pczt
+        .transparent()
+        .inputs()
+        .iter()
+        .take_while(|input| input.proprietary().contains_key("scope"))
+        .count();
+    let sapling_indices = pczt
+        .sapling()
+        .spends()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, spend)| spend.proprietary().contains_key("scope").then_some(index))
+        .collect::<Vec<_>>();
+    let orchard_indices = pczt
+        .orchard()
+        .actions()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, action)| action.spend().spend_auth_sig().is_none().then_some(index))
+        .collect::<Vec<_>>();
+    let ironwood_indices = pczt
+        .ironwood()
+        .actions()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, action)| action.spend().spend_auth_sig().is_none().then_some(index))
+        .collect::<Vec<_>>();
+    Ok(PcztPackage {
+        pczt: bytes.to_vec(),
+        n_spends: [
+            n_transparent,
+            sapling_indices.len(),
+            orchard_indices.len(),
+            ironwood_indices.len(),
+        ],
+        sapling_indices,
+        orchard_indices,
+        ironwood_indices,
+        can_sign: true,
+        can_broadcast: false,
+        price: None,
+        category: None,
+        is_issuance: false,
+    })
 }
 
 pub async fn extract_transaction(package: &PcztPackage) -> Result<Vec<u8>> {

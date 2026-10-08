@@ -43,6 +43,14 @@ Stream<SigningEvent> signTransactionWithProgress(
 Future<Uint8List> extractTransaction({required PcztPackage package}) =>
     RustLib.instance.api.crateApiPayExtractTransaction(package: package);
 
+/// Index lists for an unsigned PCZT that arrived without zkool's package metadata.
+Future<PcztPackage> unsignedPcztPackage({required List<int> bytes}) =>
+    RustLib.instance.api.crateApiPayUnsignedPcztPackage(bytes: bytes);
+
+/// Prove and spend-finalize a PCZT that a QR signer has already signed.
+Future<PcztPackage> finalizeSignedPczt({required PcztPackage package}) =>
+    RustLib.instance.api.crateApiPayFinalizeSignedPczt(package: package);
+
 /// Serialize a PCZT for transport between participants.
 ///
 /// Uses bincode's `standard()` config so the bytes are interchangeable with

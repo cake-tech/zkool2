@@ -7,17 +7,14 @@ use anyhow::{anyhow, Result};
 use bip32::PrivateKey as _;
 use orchard::keys::SpendAuthorizingKey;
 use pczt::{
-    roles::{
-        prover::Prover, signer::Signer as PcztSigner, spend_finalizer::SpendFinalizer,
-        updater::Updater,
-    },
+    roles::{signer::Signer as PcztSigner, updater::Updater},
     Pczt,
 };
 use rand::rngs::SysRng;
 use rand_core::UnwrapErr;
 use secp256k1::SecretKey;
 use sqlx::{Row, SqliteConnection};
-use tracing::{info, span, Level};
+use tracing::info;
 
 use crate::{
     account::{derive_transparent_sk, get_orchard_sk, get_sapling_sk},
@@ -28,10 +25,7 @@ use crate::{
     db::{get_account_dindex, get_account_hw, select_account_transparent},
     keys::{sapling_pgk_for_scope, sapling_ssk_for_scope},
     ledger::{HwKind, LedgerHandle},
-    pay::{
-        error::Error,
-        plan::{get_orchard_pk, get_sapling_prover, IRONWOOD_PK},
-    },
+    pay::error::Error,
     Sink,
 };
 
@@ -82,8 +76,6 @@ async fn sign_transaction(
     account: u32,
     pczt: &PcztPackage,
 ) -> Result<PcztPackage> {
-    let span = span!(Level::INFO, "transaction");
-
     let PcztPackage {
         pczt,
         n_spends,
@@ -97,7 +89,6 @@ async fn sign_transaction(
     } = pczt;
     let pczt = Pczt::parse(pczt)
         .map_err(|error| anyhow!("failed to parse PCZT for signing: {error:?}"))?;
-    let orchard_pk = get_orchard_pk(*pczt.global().consensus_branch_id())?;
 
     let dindex = get_account_dindex(connection, account).await?;
     let tkeys = select_account_transparent(connection, account, dindex).await?;
@@ -203,14 +194,11 @@ async fn sign_transaction(
         };
         let sk = sk.ok_or(Error::NoSigningKey)?;
 
-        // Sign the sighash ourselves and append the signature; the signer
-        // recovers the pubkey from the input's hash160 preimage.
-        let sighash = signer.transparent_sighash(index).unwrap();
-        let msg = secp256k1::Message::from_digest(sighash);
-        let sig = secp256k1::ecdsa::sign(msg, &sk);
+        // sign_transparent records the signature on the input. append_transparent_signature
+        // drops it unless a compressed pubkey is already in the hash160 preimages.
         signer
-            .append_transparent_signature(index, sig)
-            .map_err(|e| anyhow!("failed to sign transparent input {index}: {e:?}"))?;
+            .sign_transparent(index, &sk)
+            .map_err(|error| anyhow!("failed to sign transparent input {index}: {error:?}"))?;
     }
     for (index, bundle_index) in sapling_indices.iter().enumerate() {
         info!("signing sapling {index}");
@@ -249,27 +237,7 @@ async fn sign_transaction(
             .sign_ironwood(UnwrapErr(SysRng), *bundle_index, osak)
             .unwrap();
     }
-    let pczt = signer.finish();
-
-    span.in_scope(|| {
-        info!("Adding Proofs to PCZT");
-    });
-    let sapling_prover = get_sapling_prover().await?;
-
-    let pczt = Prover::new(pczt)
-        .create_sapling_proofs(UnwrapErr(SysRng), sapling_prover, sapling_prover)
-        .map_err(|error| anyhow!("failed to create Sapling proofs: {error:?}"))?
-        .create_orchard_proof(UnwrapErr(SysRng), orchard_pk)
-        .map_err(|error| anyhow!("failed to create Orchard proof: {error:?}"))?
-        .create_ironwood_proof(UnwrapErr(SysRng), &IRONWOOD_PK)
-        .map_err(|error| anyhow!("failed to create Ironwood proof: {error:?}"))?
-        .finish();
-    info!("Proved");
-
-    let pczt = SpendFinalizer::new(pczt)
-        .finalize_spends()
-        .map_err(|error| anyhow!("failed to finalize PCZT spends: {error:?}"))?;
-    info!("Spend Finalized");
+    let pczt = crate::pay::plan::prove_and_finalize(signer.finish()).await?;
 
     Ok(PcztPackage {
         pczt: pczt

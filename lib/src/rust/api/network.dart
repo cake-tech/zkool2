@@ -58,6 +58,9 @@ Future<List<LWDInfo>> queryLwdList({required int coin}) =>
 
 /// True when `url` is a mixnet-native server address
 /// (`nym://<identity>.<encryption>@<gateway>`).
+///
+/// Always exported so the generated bindings do not depend on the `nym`
+/// feature; without it no URL is a mixnet address.
 bool isValidNymUrl({required String url}) =>
     RustLib.instance.api.crateApiNetworkIsValidNymUrl(url: url);
 

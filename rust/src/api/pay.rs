@@ -98,6 +98,34 @@ pub async fn extract_transaction(package: &PcztPackage) -> Result<Vec<u8>> {
     crate::pay::plan::extract_transaction(package).await
 }
 
+/// Index lists for an unsigned PCZT that arrived without zkool's package metadata.
+#[cfg_attr(feature = "flutter", frb)]
+pub fn unsigned_pczt_package(bytes: &[u8]) -> Result<PcztPackage> {
+    crate::pay::plan::unsigned_pczt_package(bytes)
+}
+
+/// Prove and spend-finalize a PCZT that a QR signer has already signed.
+#[cfg_attr(feature = "flutter", frb)]
+pub async fn finalize_signed_pczt(package: &PcztPackage) -> Result<PcztPackage> {
+    let pczt = pczt::Pczt::parse(&package.pczt)
+        .map_err(|error| anyhow::anyhow!("failed to parse signed PCZT: {error:?}"))?;
+    let pczt = crate::pay::plan::prove_and_finalize(pczt).await?;
+    Ok(PcztPackage {
+        pczt: pczt
+            .serialize()
+            .map_err(|error| anyhow::anyhow!("failed to serialize finalized PCZT: {error:?}"))?,
+        n_spends: package.n_spends,
+        sapling_indices: package.sapling_indices.clone(),
+        orchard_indices: package.orchard_indices.clone(),
+        ironwood_indices: package.ironwood_indices.clone(),
+        can_sign: package.can_sign,
+        can_broadcast: true,
+        price: package.price,
+        category: package.category,
+        is_issuance: package.is_issuance,
+    })
+}
+
 #[cfg_attr(feature = "flutter", frb(dart_metadata = ("freezed")))]
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct PcztPackage {

@@ -286,6 +286,12 @@ pub async fn generate_next_change_address(account: u32, c: &Coin) -> Result<Opti
 }
 
 #[cfg_attr(feature = "flutter", frb)]
+pub async fn internal_change_addresses(account: u32, c: &Coin) -> Result<Vec<String>> {
+    let mut connection = c.get_connection().await?;
+    crate::account::internal_change_addresses(&c.network(), &mut connection, account).await
+}
+
+#[cfg_attr(feature = "flutter", frb)]
 pub async fn reset_sync(id: u32, c: &Coin) -> Result<()> {
     let mut connection = c.get_connection().await?;
 
@@ -430,9 +436,9 @@ pub async fn get_account_addresses(account: u32, ua_pools: u8, c: &Coin) -> Resu
 }
 
 #[cfg_attr(feature = "flutter", frb)]
-pub async fn list_owned_addresses(c: &Coin) -> Result<Vec<String>> {
+pub async fn list_owned_addresses(account: u32, c: &Coin) -> Result<Vec<String>> {
     let mut connection = c.get_connection().await?;
-    crate::account::list_owned_addresses(&c.network(), &mut connection, c.account).await
+    crate::account::list_owned_addresses(&c.network(), &mut connection, account).await
 }
 
 pub struct Addresses {

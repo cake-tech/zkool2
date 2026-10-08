@@ -12,6 +12,7 @@ import 'api/frost.dart';
 import 'api/init.dart';
 import 'api/issuance.dart';
 import 'api/key.dart';
+import 'api/ledger.dart';
 import 'api/mempool.dart';
 import 'api/migrate.dart';
 import 'api/near_intents.dart';
@@ -152,6 +153,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   VotingDrive
       dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVotingDrive(
+          dynamic raw);
+
+  @protected
+  FutureOr<Uint8List> Function(Uint8List)
+      dco_decode_DartFn_Inputs_list_prim_u_8_strict_Output_list_prim_u_8_strict_AnyhowException(
           dynamic raw);
 
   @protected
@@ -1531,6 +1537,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
       sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerVotingDrive(
           VotingDrive self, SseSerializer serializer);
+
+  @protected
+  void
+      sse_encode_DartFn_Inputs_list_prim_u_8_strict_Output_list_prim_u_8_strict_AnyhowException(
+          FutureOr<Uint8List> Function(Uint8List) self,
+          SseSerializer serializer);
 
   @protected
   void

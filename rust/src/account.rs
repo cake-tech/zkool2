@@ -9,10 +9,11 @@ use crate::{
     bip38,
     db::{
         init_account_orchard, init_account_sapling, init_account_transparent,
-        store_account_orchard_ivk, store_account_orchard_sk, store_account_orchard_vk,
-        store_account_sapling_ivk, store_account_sapling_sk, store_account_sapling_vk,
-        store_account_seed, store_account_transparent_addr, store_account_transparent_ivk,
-        store_account_transparent_sk, store_account_transparent_vk, update_dindex,
+        select_account_transparent, store_account_orchard_ivk, store_account_orchard_sk,
+        store_account_orchard_vk, store_account_sapling_ivk, store_account_sapling_sk,
+        store_account_sapling_vk, store_account_seed, store_account_transparent_addr,
+        store_account_transparent_ivk, store_account_transparent_sk, store_account_transparent_vk,
+        update_dindex,
     },
     key::{
         is_valid_phrase, is_valid_sapling_key, is_valid_transparent_key, is_valid_ufvk,
@@ -139,6 +140,10 @@ pub async fn new_account(
             let ledger = get_ledger(&mut db_tx, account).await?;
             derive_official_device_keys(network, &ledger, na.aindex, pools).await?
         }
+        KeySource::OfficialUfvk(ufvk) => {
+            store_account_hw(&mut db_tx, account, HwKind::Official as u8, na.aindex).await?;
+            keys_from_official_ufvk(network, &ufvk, pools).await?
+        }
         source => derive_account_keys(network, source, &passphrase, na.aindex, pools).await?,
     };
 
@@ -209,6 +214,10 @@ enum KeySource {
     ZondaxDevice,
     /// Official Ledger account whose viewing key is read from the device.
     OfficialDevice,
+    /// Official Ledger account whose viewing key was exported by a host that
+    /// owns the device connection. The mobile wallet does that, because the
+    /// transport is not available from Rust.
+    OfficialUfvk(String),
 }
 
 impl KeySource {
@@ -232,9 +241,12 @@ fn classify_key(network: &Network, hw: HwKind, key: &str) -> Result<KeySource> {
             if key.is_empty() {
                 return Ok(KeySource::OfficialDevice);
             }
+            if is_valid_ufvk(network, key) {
+                return Ok(KeySource::OfficialUfvk(key.to_string()));
+            }
             if !is_valid_phrase(key) {
                 anyhow::bail!(
-                    "Official Ledger accounts accept a seed phrase or no key to import the viewing key from the device"
+                    "Official Ledger accounts accept a seed phrase, a unified viewing key exported by the device, or no key to import the viewing key from the device"
                 );
             }
         }
@@ -652,7 +664,10 @@ async fn derive_account_keys(
                 });
             }
         }
-        KeySource::ZondaxSeed(_) | KeySource::ZondaxDevice | KeySource::OfficialDevice => {
+        KeySource::ZondaxSeed(_)
+        | KeySource::ZondaxDevice
+        | KeySource::OfficialDevice
+        | KeySource::OfficialUfvk(_) => {
             anyhow::bail!("Ledger accounts are derived with the device helpers");
         }
     }
@@ -735,7 +750,15 @@ async fn derive_official_device_keys(
     pools: u8,
 ) -> Result<AccountKeys> {
     let ufvk = ledger.get_ufvk(network, aindex).await?;
-    let uvk = UnifiedFullViewingKey::decode(network, &ufvk)
+    keys_from_official_ufvk(network, &ufvk, pools).await
+}
+
+async fn keys_from_official_ufvk(
+    network: &Network,
+    ufvk: &str,
+    pools: u8,
+) -> Result<AccountKeys> {
+    let uvk = UnifiedFullViewingKey::decode(network, ufvk)
         .map_err(|_| anyhow!("Invalid viewing key from the device"))?;
 
     // no sapling key on the device, so there is no derived default
@@ -2172,6 +2195,44 @@ pub async fn get_addresses(
         ua: ua.map(|x| x.encode(&network)),
         diversifier_index,
     };
+
+    Ok(addresses)
+}
+
+/// Change receivers for this account, encoded the same way a PCZT plan shows an
+/// output that has no user-facing address. Orchard and Ironwood change is the
+/// internal-scope receiver at diversifier 0. Sapling change is the protocol
+/// change address. Transparent entries are the stored internal-scope addresses.
+pub async fn internal_change_addresses(
+    network: &Network,
+    connection: &mut SqliteConnection,
+    account: u32,
+) -> Result<Vec<String>> {
+    let mut addresses = Vec::new();
+
+    let orchard_keys = crate::db::select_account_orchard(connection, account).await?;
+    if let Some(fvk) = orchard_keys.xvk.as_ref() {
+        let change = fvk.address_at(0u32, orchard::keys::Scope::Internal);
+        if let Some(address) = UnifiedAddress::from_receivers(Some(change), None, None, None, None)
+        {
+            addresses.push(address.encode(network));
+        }
+    }
+
+    let sapling_keys = crate::db::select_account_sapling(network, connection, account).await?;
+    if let Some(fvk) = sapling_keys.xvk.as_ref() {
+        let (_, change) = fvk.change_address();
+        addresses.push(change.encode(network));
+    }
+
+    let transparent = sqlx::query(
+        "SELECT address FROM transparent_address_accounts WHERE account = ? AND scope = 1",
+    )
+    .bind(account)
+    .map(|row: SqliteRow| row.get(0))
+    .fetch_all(&mut *connection)
+    .await?;
+    addresses.extend(transparent);
 
     Ok(addresses)
 }
