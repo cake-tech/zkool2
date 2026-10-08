@@ -256,7 +256,7 @@ class _Contact implements Contact {
   const _Contact(
       {required this.id,
       required this.name,
-      required final List<String> addresses,
+      required List<String> addresses,
       required this.notes})
       : _addresses = addresses;
 

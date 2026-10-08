@@ -393,7 +393,7 @@ class DKGStatus_WaitParams extends DKGStatus {
 /// @nodoc
 
 class DKGStatus_WaitAddresses extends DKGStatus {
-  const DKGStatus_WaitAddresses(final List<String> field0)
+  const DKGStatus_WaitAddresses(List<String> field0)
       : _field0 = field0,
         super._();
 

@@ -394,7 +394,7 @@ class _VotingDriveStatus implements VotingDriveStatus {
       required this.sharesConfirmed,
       required this.sharesTotal,
       this.quiescence,
-      required final List<String> failures})
+      required List<String> failures})
       : _failures = failures;
 
   @override
