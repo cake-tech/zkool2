@@ -147,17 +147,9 @@ fn orchard_asset_name(proprietary: &BTreeMap<String, Vec<u8>>, asset: Option<Ass
         })
 }
 
-/// The user-facing address of a shielded PCZT output: the user address set by
-/// the planner when present, otherwise the raw recipient encoded on its own
-/// (an orchard-only unified address, or the sapling payment address).
-fn shielded_output_address(
-    network: &Network,
-    user_address: Option<&String>,
-    recipient: Option<UnifiedAddress>,
-) -> Result<String> {
-    if let Some(address) = user_address.filter(|address| !address.is_empty()) {
-        return Ok(address.clone());
-    }
+/// Encode the cryptographic recipient. PCZT `user_address` is unauthenticated
+/// planner metadata and must not be shown.
+fn shielded_output_address(network: &Network, recipient: Option<UnifiedAddress>) -> Result<String> {
     recipient
         .map(|address| address.encode(network))
         .ok_or_else(|| anyhow::anyhow!("shielded PCZT output has no recipient"))
@@ -195,7 +187,6 @@ fn append_orchard_plan<D: Domain>(
                 .inner(),
             address: shielded_output_address(
                 network,
-                action.output().user_address().as_ref(),
                 action.output().recipient().as_ref().and_then(|recipient| {
                     UnifiedAddress::from_receivers(Some(*recipient), None, None, None, None)
                 }),
@@ -262,13 +253,10 @@ impl TxPlan {
                     outputs.push(TxPlanOut {
                         pool: 1,
                         amount: o.value().unwrap().inner(),
-                        address: match o.user_address().as_ref() {
-                            Some(address) if !address.is_empty() => address.clone(),
-                            _ => o
-                                .recipient()
-                                .map(|recipient| recipient.encode(network))
-                                .unwrap_or_default(),
-                        },
+                        address: o
+                            .recipient()
+                            .map(|recipient| recipient.encode(network))
+                            .unwrap_or_default(),
                         asset_name: "ZEC".to_string(),
                     });
                 }
@@ -304,7 +292,6 @@ impl TxPlan {
                         amount: a.output().value().expect("value").inner(),
                         address: shielded_output_address(
                             network,
-                            a.output().user_address().as_ref(),
                             a.output().recipient().as_ref().and_then(|recipient| {
                                 UnifiedAddress::from_receivers(
                                     Some(*recipient),
